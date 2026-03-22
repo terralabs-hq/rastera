@@ -110,6 +110,8 @@ async def merge_cogs(
         crs_epsg=base.profile.crs_epsg,
         bounds=out_bounds,
         nodata=base.profile.nodata,
+        tile_width=base.profile.tile_width,
+        tile_height=base.profile.tile_height,
     )
 
     # Get sub bboxes specific to the contributing image
@@ -170,6 +172,7 @@ async def _merge_reprojected(
     out_profile = Profile.for_bbox(
         target_bbox, res, out_crs,
         count=n_out_bands, dtype=base.profile.dtype, nodata=base.profile.nodata,
+        tile_width=base.profile.tile_width, tile_height=base.profile.tile_height,
     )
 
     # Find contributing COGs by intersecting their bounds (in target CRS) with output bbox

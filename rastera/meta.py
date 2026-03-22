@@ -30,6 +30,8 @@ class Profile:
     bounds: BBox
     nodata: int | float | None = None
     overviews: list[tuple[int, int]] | None = None
+    tile_width: int | None = None
+    tile_height: int | None = None
 
     def __repr__(self) -> str:
         parts = [
@@ -58,6 +60,8 @@ class Profile:
         count: int,
         dtype: np.dtype,
         nodata: int | float | None = None,
+        tile_width: int | None = None,
+        tile_height: int | None = None,
     ) -> Profile:
         """Build a Profile for a regular grid covering *bbox* at the given resolution."""
         width = max(1, math.ceil(bbox.width / res))
@@ -79,6 +83,8 @@ class Profile:
             crs_epsg=crs_epsg,
             bounds=bounds,
             nodata=nodata,
+            tile_width=tile_width,
+            tile_height=tile_height,
         )
 
     def adjust_to_window(self, window: Window) -> Profile:
@@ -117,6 +123,8 @@ class Profile:
             crs_epsg=crs_epsg,
             bounds=bounds_from_transform(transform, ifd.image_width, ifd.image_height),
             nodata=_nodata_from_ifd(ifd, dtype),
+            tile_width=ifd.tile_width,
+            tile_height=ifd.tile_height,
         )
 
 

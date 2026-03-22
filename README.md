@@ -1,6 +1,6 @@
 # rastera
 
-"Async rasterio for COGs", build om [async-tiff](https://github.com/developmentseed/async-tiff), no GDAL.
+**Async rasterio for COGs**, build on [async-tiff](https://github.com/developmentseed/async-tiff), no GDAL.
 
 - `read` and multi-file, cross-crs `merge` with `target_crs`, `target_resolution`, `bbox`, `window`
 - Parallel everywhere: concurrent file opens with shared connection pool, concurrent tile downloads within each file, concurrent merge reads across files
@@ -23,9 +23,9 @@ data, profile = await src.read()
 # Spatial subset with reprojection
 data, profile = await src.read(
     bbox=(minx, miny, maxx, maxy),
-    bbox_crs=3006,
-    target_crs=32633,
-    target_resolution=10
+    bbox_crs=32633,
+    target_crs=32632,
+    target_resolution=20
 )
 ```
 
@@ -35,7 +35,7 @@ data, profile = await src.read(
 uris = ["s3://bucket/tile_a.tif", "s3://bucket/tile_b.tif", ...]
 sources = await rastera.open(uris)  # concurrent opens, shared connection pool
 
-data, profile = await rastera.merge(sources, bbox=bbox, bbox_crs=4326, target_resolution=10)
+data, profile = await rastera.merge(sources, bbox=bbox, bbox_crs=32633, target_resolution=20)
 ```
 
 ## TODO maybe

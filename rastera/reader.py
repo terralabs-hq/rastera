@@ -325,6 +325,8 @@ class AsyncGeoTIFF:
                 crs_epsg=self.profile.crs_epsg,
                 bounds=self.profile.bounds,
                 nodata=self.profile.nodata,
+                tile_width=ifd.tile_width,
+                tile_height=ifd.tile_height,
             )
 
         # band_indices are already 0-based (converted by the caller).
