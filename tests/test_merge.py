@@ -11,7 +11,7 @@ from affine import Affine
 from rastera.geo import BBox
 from rastera.merge import merge_cogs, _mosaic_grid_from_bbox, _require_compatible_merge_inputs
 from rastera.meta import Profile
-from tests.conftest import make_mock_ifd, make_profile
+from tests.conftest import make_profile
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -32,10 +32,8 @@ def _make_cog(
         res=(scale, scale), crs_epsg=crs, bounds=bounds,
     )
 
-    ifd = make_mock_ifd(width=width, height=height, scale=scale, bands=bands, crs_epsg=crs)
     cog = MagicMock()
     cog.profile = profile
-    cog.ifd = ifd
     cog.read = AsyncMock()
     return cog
 
@@ -154,8 +152,9 @@ class TestMergeCogs:
 
         result_arr, result_profile = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 15, 10), bbox_crs=32632, band_indices=[1],
+            method="last",
         )
-        # The overlap region (cols 5-9) should have cog2's value (last writer wins)
+        # The overlap region (cols 5-9) should have cog2's value (last writer wins with method="last")
         assert result_arr.shape == (1, 10, 15)
         assert np.all(result_arr[0, :, :5] == 1)  # cog1 only
         assert np.all(result_arr[0, :, 10:] == 2)  # cog2 only
@@ -227,6 +226,7 @@ class TestMergeCogs:
 
         result_arr, _ = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
+            method="last",
         )
         # top half: cog2 is NaN so cog1's value (5.0) preserved
         assert np.all(result_arr[0, :5, :] == 5.0)
@@ -234,7 +234,7 @@ class TestMergeCogs:
         assert np.all(result_arr[0, 5:, :] == 77.0)
 
     async def test_nodata_none_still_overwrites(self):
-        """When nodata is None, later COGs overwrite earlier ones (original behavior)."""
+        """When nodata is None, later COGs overwrite earlier ones with method='last'."""
         cog1 = _make_cog(width=10, height=10, scale=1.0, bands=1)
         cog2 = _make_cog(width=10, height=10, scale=1.0, bands=1)
 
@@ -255,6 +255,7 @@ class TestMergeCogs:
 
         result_arr, _ = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
+            method="last",
         )
-        # nodata=None, so cog2's zeros overwrite cog1's 42s
+        # nodata=None with method="last", so cog2's zeros overwrite cog1's 42s
         assert np.all(result_arr == 0)

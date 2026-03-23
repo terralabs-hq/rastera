@@ -96,7 +96,6 @@ async def merge(
     fill_value: int | float = 0,
     target_crs: int | None = None,
     target_resolution: float | None = None,
-    tile_batch_size: int = 48,
     method: Literal["first", "last"] = "first",
 ) -> tuple:
     """
@@ -124,6 +123,5 @@ async def merge(
         fill_value=fill_value,
         target_crs=target_crs,
         target_resolution=target_resolution,
-        tile_batch_size=tile_batch_size,
         method=method,
     )

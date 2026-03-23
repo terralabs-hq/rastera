@@ -114,54 +114,6 @@ class Window:
         return Window(col_min, col_max, row_min, row_max)
 
 
-def compute_tile_paste_slices(
-    *,
-    tx: int,
-    ty: int,
-    tile_width: int,
-    tile_height: int,
-    window: Window,
-) -> tuple[slice, slice, slice, slice] | None:
-    """
-    Compute aligned tile/output slices for pasting a tile into a window read.
-
-    Returns (out_rows, out_cols, tile_rows, tile_cols) where output indices are
-    relative to `window` (i.e. (0,0) is (window.col_min, window.row_min) in the
-    full image).
-    """
-    tile_col0 = tx * tile_width
-    tile_row0 = ty * tile_height
-    tile_col1 = tile_col0 + tile_width
-    tile_row1 = tile_row0 + tile_height
-
-    # Overlap with requested window (in full-image pixel coords)
-    col0 = max(window.col_min, tile_col0)
-    col1 = min(window.col_max, tile_col1)
-    row0 = max(window.row_min, tile_row0)
-    row1 = min(window.row_max, tile_row1)
-
-    if col0 >= col1 or row0 >= row1:
-        return None  # no overlap
-
-    # indices into tile
-    tile_c0 = col0 - tile_col0
-    tile_c1 = col1 - tile_col0
-    tile_r0 = row0 - tile_row0
-    tile_r1 = row1 - tile_row0
-
-    # indices into output window
-    out_c0 = col0 - window.col_min
-    out_c1 = col1 - window.col_min
-    out_r0 = row0 - window.row_min
-    out_r1 = row1 - window.row_min
-
-    return (
-        slice(out_r0, out_r1),
-        slice(out_c0, out_c1),
-        slice(tile_r0, tile_r1),
-        slice(tile_c0, tile_c1),
-    )
-
 
 def compute_paste_slices(
     *,
@@ -365,21 +317,6 @@ def ensure_bbox(bbox: BBox | tuple[float, float, float, float]) -> BBox:
     """Normalize a bbox argument to a BBox instance."""
     return bbox if isinstance(bbox, BBox) else BBox(*bbox)
 
-
-def get_intersecting_image_tiles(
-    window: Window, tile_width: int, tile_height: int
-) -> list[tuple[int, int]]:
-    """Return tile (x, y) indices that intersect the pixel window."""
-    tile_x_min = window.col_min // tile_width
-    tile_x_max = (window.col_max - 1) // tile_width
-    tile_y_min = window.row_min // tile_height
-    tile_y_max = (window.row_max - 1) // tile_height
-
-    return [
-        (tx, ty)
-        for ty in range(tile_y_min, tile_y_max + 1)
-        for tx in range(tile_x_min, tile_x_max + 1)
-    ]
 
 
 # ---- Private helpers ----

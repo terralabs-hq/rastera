@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import math
 import os
 import re
@@ -9,17 +8,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
-from affine import Affine
-from async_tiff import TIFF
+from async_geotiff import GeoTIFF
+from async_geotiff import Window as AGWindow
 from async_tiff.store import from_url
 from pyproj import Transformer
 
 from .geo import (
     BBox,
     Window,
-    compute_tile_paste_slices,
     ensure_bbox,
-    get_intersecting_image_tiles,
     normalize_band_indices,
     resample_nearest,
     transform_bbox,
@@ -30,63 +27,56 @@ _DEFAULT_REGION = (
     os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
 )
 
-# In-memory cache for parsed TIFF objects, keyed by URI.
+# In-memory cache for parsed GeoTIFF objects, keyed by URI.
 # Avoids re-fetching headers on repeated opens of the same file.
-_tiff_cache: dict[str, TIFF] = {}
+_geotiff_cache: dict[str, GeoTIFF] = {}
 _cache_max_size: int = 128
 
+
 def clear_cache() -> None:
-    """Clear the in-memory TIFF header cache."""
-    _tiff_cache.clear()
+    """Clear the in-memory GeoTIFF header cache."""
+    _geotiff_cache.clear()
 
 
 def set_cache_size(n: int) -> None:
-    """Set the maximum number of cached TIFF objects. 0 disables caching."""
+    """Set the maximum number of cached GeoTIFF objects. 0 disables caching."""
     global _cache_max_size
     _cache_max_size = n
-    while len(_tiff_cache) > _cache_max_size:
-        _tiff_cache.pop(next(iter(_tiff_cache)))
+    while len(_geotiff_cache) > _cache_max_size:
+        _geotiff_cache.pop(next(iter(_geotiff_cache)))
 
 
 class AsyncGeoTIFF:
     """AsyncGeoTIFF instance for a single GeoTIFF file.
 
-    IFD: Image File Directory. One image can contain multiple IFDs, e.g. overview, masks etc.,
-    all stored in tiff.ifds.
+    Wraps ``async_geotiff.GeoTIFF`` with bbox-based reading, reprojection,
+    resampling, and overview selection.
     """
 
-    def __init__(self, uri: str, tiff: TIFF, ifd_index: int = 0):
+    def __init__(self, uri: str, geotiff: GeoTIFF):
         self.uri = uri
-        self.tiff = tiff
-        self.ifd_index = ifd_index
-        self.ifd = tiff.ifds[self.ifd_index]
-        self.profile: Profile = Profile.from_ifd(self.ifd)
+        self._geotiff = geotiff
+        self.profile: Profile = Profile.from_geotiff(geotiff)
 
-        # Attach overview sizes (already parsed during open — no extra requests)
-        base_w, base_h = self.ifd.image_width, self.ifd.image_height
         self.overviews: list[tuple[int, int]] = [
-            (ifd.image_width, ifd.image_height)
-            for ifd in self.tiff.ifds[1:]
-            if ifd.image_width < base_w and ifd.image_height < base_h
+            (o.width, o.height) for o in geotiff.overviews
         ]
         self.profile.overviews = self.overviews
 
-    def _best_ifd_for_resolution(self, target_resolution: float) -> int:
-        """Return the IFD index whose resolution is closest to *target_resolution*
-        without being coarser. Falls back to the full-resolution IFD (0)."""
+    def _best_overview_for_resolution(self, target_resolution: float):
+        """Return the Overview whose resolution is closest to *target_resolution*
+        without being coarser. Returns None to use full resolution."""
         native_res = self.profile.res[0]
-        best_idx = self.ifd_index  # default: full res
+        best = None
         best_res = native_res
 
-        for i, ifd in enumerate(self.tiff.ifds[1:], start=1):
-            if ifd.image_width >= self.ifd.image_width:
-                continue  # not an overview
-            ovr_res = native_res * (self.ifd.image_width / ifd.image_width)
+        for overview in self._geotiff.overviews:
+            ovr_res = native_res * (self._geotiff.width / overview.width)
             if ovr_res <= target_resolution and ovr_res >= best_res:
                 best_res = ovr_res
-                best_idx = i
+                best = overview
 
-        return best_idx
+        return best
 
     @classmethod
     async def open(
@@ -102,42 +92,41 @@ class AsyncGeoTIFF:
 
         Supports s3://, https://, gs://, az://, and local file paths.
 
-
         Args:
             uri: Any URI supported by object_store (s3://, https://, gs://, file://, etc.).
             store: Optional pre-constructed store. When provided, the key is
                 extracted from the URI and used as the path within the store. If no store is
                 provided, it is auto-constructed from the URI via ``async_tiff.store.from_url``.
             prefetch: Number of bytes to prefetch when opening the TIFF.
-            cache: When True, cache the parsed TIFF object in memory so that
+            cache: When True, cache the parsed GeoTIFF object in memory so that
                 subsequent opens of the same URI skip the header fetch.
             **store_kwargs: Extra keyword arguments forwarded to ``from_url``
                 (e.g. ``region``, ``skip_signature``, ``request_payer``).
         """
-        if cache and _cache_max_size > 0 and uri in _tiff_cache:
-            return cls(uri, _tiff_cache[uri])
+        if cache and _cache_max_size > 0 and uri in _geotiff_cache:
+            return cls(uri, _geotiff_cache[uri])
 
         if store is not None:
             key = _extract_key(uri)
-            tiff = await TIFF.open(key, store=store, prefetch=prefetch)
+            geotiff = await GeoTIFF.open(key, store=store, prefetch=prefetch)
         else:
             local_path = _resolve_local_path(uri)
             if local_path is not None:
                 store = from_url(local_path.parent.as_uri(), **store_kwargs)
-                tiff = await TIFF.open(local_path.name, store=store, prefetch=prefetch)
+                geotiff = await GeoTIFF.open(local_path.name, store=store, prefetch=prefetch)
             else:
                 if _is_s3_uri(uri):
                     store_kwargs.setdefault("skip_signature", True)
                     store_kwargs.setdefault("region", _detect_region(uri))
                 store = from_url(uri, **store_kwargs)
-                tiff = await TIFF.open("", store=store, prefetch=prefetch)
+                geotiff = await GeoTIFF.open("", store=store, prefetch=prefetch)
 
         if cache and _cache_max_size > 0:
-            if len(_tiff_cache) >= _cache_max_size:
-                _tiff_cache.pop(next(iter(_tiff_cache)))
-            _tiff_cache[uri] = tiff
+            if len(_geotiff_cache) >= _cache_max_size:
+                _geotiff_cache.pop(next(iter(_geotiff_cache)))
+            _geotiff_cache[uri] = geotiff
 
-        return cls(uri, tiff)
+        return cls(uri, geotiff)
 
     async def read(
         self,
@@ -147,7 +136,6 @@ class AsyncGeoTIFF:
         band_indices: Sequence[int] | None = None,
         target_crs: int | None = None,
         target_resolution: float | None = None,
-        _tile_batch_size: int | None = None,
     ) -> tuple[np.ndarray, Profile]:
         """Read image data, optionally reprojecting and resampling.
 
@@ -166,7 +154,7 @@ class AsyncGeoTIFF:
         Returns:
             Tuple of (numpy array, Profile) containing pixel data and spatial metadata.
         """
-        band_indices = normalize_band_indices(band_indices, self.ifd.samples_per_pixel)
+        band_indices = normalize_band_indices(band_indices, self.profile.count)
         if window is not None and bbox is not None:
             raise ValueError("Cannot specify both bbox and window")
         if bbox is not None and bbox_crs is None:
@@ -192,22 +180,20 @@ class AsyncGeoTIFF:
         if not needs_reproject and not needs_resample:
             data, profile = await self._read_native(
                 bbox=bbox, window=window, band_indices=band_indices,
-                _tile_batch_size=_tile_batch_size,
             )
             return data, profile
 
-        # Pick the best overview IFD for the target resolution
-        ovr_idx = (
-            self._best_ifd_for_resolution(target_resolution)
+        # Pick the best overview for the target resolution
+        overview = (
+            self._best_overview_for_resolution(target_resolution)
             if needs_resample
-            else self.ifd_index
+            else None
         )
 
         # Window + resample: read native pixels for the window, then resample
         if window is not None and needs_resample:
             native_arr, native_profile = await self._read_native(
-                window=window, band_indices=band_indices, ifd_index=ovr_idx,
-                _tile_batch_size=_tile_batch_size,
+                window=window, band_indices=band_indices, overview=overview,
             )
             target_bbox = native_profile.bounds
             res = target_resolution
@@ -255,8 +241,7 @@ class AsyncGeoTIFF:
 
         # Read from best overview (or full res if no suitable overview)
         native_arr, native_profile = await self._read_native(
-            bbox=src_bbox, band_indices=band_indices, ifd_index=ovr_idx,
-            _tile_batch_size=_tile_batch_size,
+            bbox=src_bbox, band_indices=band_indices, overview=overview,
         )
 
         # Build target grid
@@ -305,77 +290,38 @@ class AsyncGeoTIFF:
         bbox: BBox | tuple[float, float, float, float] | None = None,
         window: Window | None = None,
         band_indices: Sequence[int] | None = None,
-        ifd_index: int | None = None,
-        _tile_batch_size: int | None = None,
+        overview: Any | None = None,
     ) -> tuple[np.ndarray, Profile]:
-        """Read at native resolution/CRS, optionally from an overview IFD."""
-        ifd_index = ifd_index if ifd_index is not None else self.ifd_index
-        ifd = self.tiff.ifds[ifd_index]
-
-        if ifd_index == self.ifd_index:
-            ifd_profile = self.profile
+        """Read at native resolution/CRS, optionally from an overview."""
+        # Determine which readable to use (full-res GeoTIFF or an Overview)
+        if overview is not None:
+            readable = overview
+            readable_profile = Profile.from_overview(self._geotiff, overview)
         else:
-            # Overview IFDs lack geo tags — derive profile from base profile
-            scale_x = self.profile.width / ifd.image_width
-            scale_y = self.profile.height / ifd.image_height
-            ovr_res = (self.profile.res[0] * scale_x, self.profile.res[1] * scale_y)
-            ovr_transform = Affine(
-                ovr_res[0],
-                0,
-                float(self.profile.transform.c),
-                0,
-                -ovr_res[1],
-                float(self.profile.transform.f),
-            )
-            ifd_profile = Profile(
-                width=ifd.image_width,
-                height=ifd.image_height,
-                count=self.profile.count,
-                dtype=self.profile.dtype,
-                transform=ovr_transform,
-                res=ovr_res,
-                crs_epsg=self.profile.crs_epsg,
-                bounds=self.profile.bounds,
-                nodata=self.profile.nodata,
-                tile_width=ifd.tile_width,
-                tile_height=ifd.tile_height,
-            )
+            readable = self._geotiff
+            readable_profile = self.profile
 
-        # band_indices are already 0-based (converted by the caller).
         if bbox is None and window is None:
-            bbox = ifd_profile.bounds
+            bbox = readable_profile.bounds
         if window is None:
-            window = Window.from_bbox(ifd_profile, bbox)
+            window = Window.from_bbox(readable_profile, bbox)
 
-        tile_coords = get_intersecting_image_tiles(
-            window, ifd.tile_width, ifd.tile_height
-        )
-        tiles = await _fetch_tiles(self.tiff, tile_coords, ifd_index, _tile_batch_size)
-
-        out_array = np.zeros(
-            (len(band_indices), window.win_height, window.win_width),
-            dtype=ifd_profile.dtype,
+        # Convert rastera Window to async-geotiff Window
+        ag_window = AGWindow(
+            col_off=window.col_min,
+            row_off=window.row_min,
+            width=window.win_width,
+            height=window.win_height,
         )
 
-        decoded_results = await asyncio.gather(
-            *(_decode_tile_concurrently(t) for t in tiles)
-        )
+        # Use async-geotiff's built-in read (handles tile fetching + stitching)
+        result = await readable.read(window=ag_window)
+        data = result.data  # shape: (bands, height, width)
 
-        for tx, ty, decoded in decoded_results:
-            slices = compute_tile_paste_slices(
-                tx=tx,
-                ty=ty,
-                tile_width=ifd.tile_width,
-                tile_height=ifd.tile_height,
-                window=window,
-            )
-            if slices is None:
-                continue
-            out_rows, out_cols, tile_rows, tile_cols = slices
-            arr = np.asarray(decoded).transpose(2, 0, 1)  # (bands, H, W)
-            out_array[:, out_rows, out_cols] = arr[band_indices, tile_rows, tile_cols]
+        # Select requested bands
+        out_array = data[band_indices]
 
-        out_profile = ifd_profile.adjust_to_window(window)
+        out_profile = readable_profile.adjust_to_window(window)
         return out_array, out_profile
 
     def __repr__(self) -> str:
@@ -452,34 +398,3 @@ def _resolve_local_path(uri: str):
     if parsed.scheme not in ("", "file") or _is_s3_uri(uri):
         return None
     return Path(parsed.path if parsed.scheme == "file" else uri).resolve()
-
-
-async def _decode_tile_concurrently(tile: Any) -> tuple[int, int, Any]:
-    tx, ty = tile.x, tile.y
-    try:
-        decoded = await tile.decode()
-        return tx, ty, decoded
-    except Exception as exc:
-        raise RuntimeError(f"Failed to decode tile ({tx}, {ty}): {exc}") from exc
-
-
-async def _fetch_tiles(
-    tiff: Any,
-    tile_coords: list,
-    ifd_index: int,
-    batch_size: int | None,
-) -> list:
-    """Fetch tiles, optionally in batches.
-
-    When batch_size is None, all tiles are fetched in a single call.
-    During merges, a batch_size is passed to limit concurrent HTTP requests
-    per COG — empirically necessary to avoid connection failures at high
-    merge concurrency.
-    """
-    if batch_size is None or batch_size >= len(tile_coords):
-        return list(await tiff.fetch_tiles(tile_coords, ifd_index))
-    tiles = []
-    for i in range(0, len(tile_coords), batch_size):
-        batch = tile_coords[i : i + batch_size]
-        tiles.extend(await tiff.fetch_tiles(batch, ifd_index))
-    return tiles

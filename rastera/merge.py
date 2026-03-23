@@ -22,12 +22,6 @@ from .meta import Profile
 
 DEFAULT_CONCURRENCY = 4
 
-# Per-COG tile fetch batch size during merges. Limits concurrent HTTP requests
-# per COG to prevent connection failures when multiple COGs are read in parallel.
-# Empirically determined: without batching, max_concurrency >= 4 fails on
-# high-resolution COGs (~150+ tiles each).
-DEFAULT_MERGE_BATCH_SIZE = 48
-
 
 async def merge_cogs(
     cogs: Sequence[AsyncGeoTIFF],
@@ -39,7 +33,6 @@ async def merge_cogs(
     target_crs: int | None = None,
     target_resolution: float | None = None,
     max_concurrency: int = DEFAULT_CONCURRENCY,
-    tile_batch_size: int = DEFAULT_MERGE_BATCH_SIZE,
     method: Literal["first", "last"] = "first",
 ) -> tuple[np.ndarray, Profile]:
     """
@@ -76,7 +69,7 @@ async def merge_cogs(
     base = cogs[0]
 
     # Validate + resolve count; keep original band_indices for cog.read() calls.
-    n_out_bands = len(normalize_band_indices(band_indices, base.ifd.samples_per_pixel))
+    n_out_bands = len(normalize_band_indices(band_indices, base.profile.count))
 
     # Decide whether we need the reprojected merge path.
     all_same_crs = all(
@@ -109,7 +102,6 @@ async def merge_cogs(
             target_crs=target_crs,
             target_resolution=target_resolution,
             max_concurrency=max_concurrency,
-            tile_batch_size=tile_batch_size,
             method=method,
         )
 
@@ -153,10 +145,8 @@ async def merge_cogs(
     async def _read_native_bands(
         cog: AsyncGeoTIFF, sb: BBox
     ) -> tuple[np.ndarray, Profile]:
-        indices = normalize_band_indices(band_indices, cog.ifd.samples_per_pixel)
-        return await cog._read_native(
-            bbox=sb, band_indices=indices, _tile_batch_size=tile_batch_size
-        )
+        indices = normalize_band_indices(band_indices, cog.profile.count)
+        return await cog._read_native(bbox=sb, band_indices=indices)
 
     out_array = await _gather_and_paste(
         contributing=sub_bboxes,
@@ -181,7 +171,6 @@ async def _merge_reprojected(
     target_crs: int | None,
     target_resolution: float | None,
     max_concurrency: int = DEFAULT_CONCURRENCY,
-    tile_batch_size: int = DEFAULT_MERGE_BATCH_SIZE,
     method: Literal["first", "last"] = "first",
 ) -> tuple[np.ndarray, Profile]:
     """Path B: merge with reprojection — supports mixed-CRS inputs."""
@@ -235,7 +224,6 @@ async def _merge_reprojected(
             target_crs=out_crs,
             target_resolution=res,
             band_indices=band_indices,
-            _tile_batch_size=tile_batch_size,
         )
 
     out_array = await _gather_and_paste(
@@ -419,8 +407,8 @@ def _require_compatible_merge_inputs(cogs: Sequence[AsyncGeoTIFF]) -> None:
     for cog in cogs[1:]:
         if cog.profile.crs_epsg != base.profile.crs_epsg:
             raise ValueError("All GeoTIFFs must share the same CRS EPSG")
-        if cog.ifd.samples_per_pixel != base.ifd.samples_per_pixel:
-            raise ValueError("All GeoTIFFs must share the same samples_per_pixel")
+        if cog.profile.count != base.profile.count:
+            raise ValueError("All GeoTIFFs must share the same band count")
         if not math.isclose(float(cog.profile.transform.a), scale_x):
             raise ValueError("All GeoTIFFs must share the same pixel width")
         if not math.isclose(float(-cog.profile.transform.e), scale_y):

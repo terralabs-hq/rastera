@@ -22,28 +22,30 @@ def make_profile(width=100, height=100, scale=10.0, count=1, dtype=np.uint8):
     )
 
 
-def make_mock_ifd(
-    width=100, height=100, scale=10.0, bands=3, tile_size=256,
-    sample_format=1, bits_per_sample=16, nodata_tag=None,
-    crs_epsg=32632, geographic_type=None,
+def make_mock_geotiff(
+    width=100, height=100, scale=10.0, count=3,
+    tile_width=256, tile_height=256, dtype=np.dtype("u2"),
+    nodata=None, crs_epsg=32632,
 ):
-    """Build a mock IFD suitable for Profile.from_ifd() and AsyncGeoTIFF tests."""
-    ifd = MagicMock()
-    ifd.image_width = width
-    ifd.image_height = height
-    ifd.samples_per_pixel = bands
-    ifd.tile_width = tile_size
-    ifd.tile_height = tile_size
-    ifd.model_pixel_scale = [scale, scale, 0]
-    ifd.model_tiepoint = [0, 0, 0, 0, height * scale, 0]
-    ifd.bits_per_sample = [bits_per_sample]
-    ifd.sample_format = [sample_format]
-    ifd.geo_key_directory = MagicMock(
-        projected_type=crs_epsg, geographic_type=geographic_type,
-    )
-    ifd.other_tags = {}
-    ifd.gdal_nodata = None
-    if nodata_tag is not None:
-        from rastera.meta import _GDAL_NODATA_TAG
-        ifd.other_tags[_GDAL_NODATA_TAG] = nodata_tag
-    return ifd
+    """Build a mock async_geotiff.GeoTIFF suitable for Profile.from_geotiff()."""
+    gt = MagicMock()
+    gt.width = width
+    gt.height = height
+    gt.count = count
+    gt.dtype = dtype
+    gt.nodata = nodata
+    gt.tile_width = tile_width
+    gt.tile_height = tile_height
+
+    transform = Affine(scale, 0, 0, 0, -scale, height * scale)
+    gt.transform = transform
+    gt.res = (scale, scale)
+
+    crs_mock = MagicMock()
+    crs_mock.to_epsg.return_value = crs_epsg
+    gt.crs = crs_mock
+
+    gt.bounds = (0, 0, width * scale, height * scale)
+    gt.overviews = []
+
+    return gt

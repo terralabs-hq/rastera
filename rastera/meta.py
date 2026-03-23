@@ -9,9 +9,6 @@ import numpy as np
 
 from .geo import BBox, Window, bounds_from_transform
 
-_GDAL_NODATA_TAG = 42113
-
-
 @dataclass
 class Profile:
     """Core geospatial metadata for a GeoTIFF-like dataset.
@@ -102,116 +99,51 @@ class Profile:
         )
 
     @classmethod
-    def from_ifd(cls, ifd: Any) -> Profile:
-        """Construct `Profile` (dimensions, tiling, transform, CRS) from a TIFF IFD."""
-        gkd = ifd.geo_key_directory
-        crs_epsg = None
-        if gkd is not None:
-            crs_epsg = getattr(gkd, "projected_type", None) or getattr(gkd, "geographic_type", None)
-
-        transform = _transform_from_ifd(ifd)
-        dtype = np.dtype(_dtype_from_ifd(ifd))
-        res = (float(transform.a), float(-transform.e))
-
+    def from_geotiff(cls, gt: Any) -> Profile:
+        """Construct a Profile from an ``async_geotiff.GeoTIFF`` instance."""
+        dtype = gt.dtype
+        nodata = _coerce_nodata(gt.nodata, dtype)
+        bounds = gt.bounds  # (minx, miny, maxx, maxy)
         return cls(
-            width=ifd.image_width,
-            height=ifd.image_height,
-            count=ifd.samples_per_pixel,
+            width=gt.width,
+            height=gt.height,
+            count=gt.count,
             dtype=dtype,
-            transform=transform,
-            res=res,
-            crs_epsg=crs_epsg,
-            bounds=bounds_from_transform(transform, ifd.image_width, ifd.image_height),
-            nodata=_nodata_from_ifd(ifd, dtype),
-            tile_width=ifd.tile_width,
-            tile_height=ifd.tile_height,
+            transform=gt.transform,
+            res=gt.res,
+            crs_epsg=gt.crs.to_epsg(),
+            bounds=BBox(*bounds),
+            nodata=nodata,
+            tile_width=gt.tile_width,
+            tile_height=gt.tile_height,
+        )
+
+    @classmethod
+    def from_overview(cls, gt: Any, overview: Any) -> Profile:
+        """Construct a Profile for an ``async_geotiff.Overview``."""
+        dtype = gt.dtype
+        nodata = _coerce_nodata(gt.nodata, dtype)
+        bounds = gt.bounds  # overviews share the base image bounds
+        return cls(
+            width=overview.width,
+            height=overview.height,
+            count=gt.count,
+            dtype=dtype,
+            transform=overview.transform,
+            res=overview.res,
+            crs_epsg=gt.crs.to_epsg(),
+            bounds=BBox(*bounds),
+            nodata=nodata,
+            tile_width=overview.tile_width,
+            tile_height=overview.tile_height,
         )
 
 
-def _transform_from_ifd(ifd: Any) -> Affine:
-    """Build an Affine transform from GeoTIFF ModelPixelScale / ModelTiepoint tags."""
-    mps = ifd.model_pixel_scale
-    mtp = ifd.model_tiepoint
-
-    if not (mps and mtp and len(mps) >= 2 and len(mtp) >= 6):
-        msg = "Missing model_pixel_scale/model_tiepoint"
-        raise ValueError(msg)
-
-    scale_x, scale_y = mps[0], mps[1]
-    i, j, _k, x0, y0, _z = mtp[:6]
-
-    # Standard north-up GeoTIFF -> rasterio-style Affine:
-    # x = x0 + (col - i) * scale_x
-    # y = y0 - (row - j) * scale_y
-    return Affine(
-        scale_x,
-        0.0,
-        x0 - i * scale_x,
-        0.0,
-        -scale_y,
-        y0 + j * scale_y,
-    )
-
-
-def _dtype_from_ifd(ifd: Any) -> np.dtype:
-    """Derive a numpy dtype from sample_format and bits_per_sample tags."""
-    sf = ifd.sample_format[0]
-    bits = ifd.bits_per_sample[0]
-    sf_val = int(sf) if not isinstance(sf, int) else sf
-    kind = {1: "u", 2: "i", 3: "f"}.get(sf_val)
-    if kind is None:
-        raise NotImplementedError(f"Unsupported sample_format: {sf}")
-
-    try:
-        return np.dtype(f"{kind}{bits // 8}")
-    except TypeError:
-        raise NotImplementedError(f"Unsupported sample_format/bits: {sf}, {bits}")
-
-
-def _nodata_from_ifd(ifd: Any, dtype: np.dtype) -> int | float | None:
-    """Extract the GDAL_NODATA value from the IFD, coerced to match *dtype*.
-
-    async_tiff >=0.7 exposes ``gdal_nodata`` as a dedicated attribute
-    (no longer inside ``other_tags``).  We try the dedicated attribute
-    first, then fall back to ``other_tags[42113]`` for older versions.
-    """
-    # Prefer the dedicated attribute (async_tiff >=0.7).
-    raw = getattr(ifd, "gdal_nodata", None)
-    if raw is None:
-        other = getattr(ifd, "other_tags", None) or {}
-        raw = other.get(_GDAL_NODATA_TAG)
-    if raw is None:
+def _coerce_nodata(nodata: float | None, dtype: np.dtype) -> int | float | None:
+    """Coerce nodata from async-geotiff (always float) to match the raster dtype."""
+    if nodata is None:
         return None
-
-    # Unwrap single-element lists (some TIFF writers nest the value).
-    while isinstance(raw, list) and len(raw) == 1:
-        raw = raw[0]
-
-    # Rational (numerator, denominator) tuple.
-    if isinstance(raw, tuple) and len(raw) == 2:
-        try:
-            raw = float(raw[0]) / float(raw[1])
-        except (TypeError, ValueError, ZeroDivisionError):
-            return None
-
-    # Coerce to numeric.
-    if isinstance(raw, str):
-        s = raw.strip().strip("\x00")
-        if not s:
-            return None
-        try:
-            v: int | float = float("nan") if s.lower() in {"nan", "+nan", "-nan"} else float(s)
-        except ValueError:
-            return None
-    elif isinstance(raw, (int, float)):
-        v = raw
-    else:
-        return None
-
-    # Cast to match the raster dtype.
     kind = np.dtype(dtype).kind
-    if kind in {"i", "u"}:
-        return None if (isinstance(v, float) and math.isnan(v)) else int(v)
-    if kind == "f":
-        return float(v)
-    return v
+    if kind in ("i", "u"):
+        return None if math.isnan(nodata) else int(nodata)
+    return float(nodata)

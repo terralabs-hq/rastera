@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rastera"
 version = "0.1.0"
-description = "Async raster reader with bounds/window/merge read functionality, based on async-tiff"
+description = "Async raster reader with bounds/window/merge read functionality, based on async-geotiff"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "affine>=2.4.0",
-    "async-tiff>=0.7.1",
+    "async-geotiff>=0.3.0",
     "numpy>=2.2.6",
     "pyproj>=3.7.1",
 ]

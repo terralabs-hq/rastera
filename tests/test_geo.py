@@ -7,9 +7,7 @@ from affine import Affine
 from rastera.geo import (
     BBox,
     Window,
-    compute_tile_paste_slices,
     compute_paste_slices,
-    get_intersecting_image_tiles,
     resample_nearest,
     transform_bbox,
 )
@@ -89,40 +87,6 @@ class TestWindow:
         assert w.win_height == 60
 
 
-# ── compute_tile_paste_slices ─────────────────────────────────────────────
-
-
-class TestComputeTilePasteSlices:
-    def test_full_overlap(self):
-        window = Window(0, 256, 0, 256)
-        result = compute_tile_paste_slices(
-            tx=0, ty=0, tile_width=256, tile_height=256, window=window
-        )
-        assert result is not None
-        out_rows, out_cols, tile_rows, tile_cols = result
-        assert out_rows == slice(0, 256)
-        assert out_cols == slice(0, 256)
-        assert tile_rows == slice(0, 256)
-        assert tile_cols == slice(0, 256)
-
-    def test_partial_overlap(self):
-        window = Window(100, 300, 100, 300)
-        result = compute_tile_paste_slices(
-            tx=0, ty=0, tile_width=256, tile_height=256, window=window
-        )
-        assert result is not None
-        out_rows, out_cols, tile_rows, tile_cols = result
-        # tile covers [0..256), window starts at 100 -> overlap is [100..256)
-        assert out_rows == slice(0, 156)
-        assert tile_rows == slice(100, 256)
-
-    def test_no_overlap(self):
-        window = Window(500, 600, 500, 600)
-        result = compute_tile_paste_slices(
-            tx=0, ty=0, tile_width=256, tile_height=256, window=window
-        )
-        assert result is None
-
 
 # ── compute_paste_slices ──────────────────────────────────────────────────
 
@@ -149,25 +113,6 @@ class TestComputePasteSlices:
         )
         assert result is None
 
-
-# ── get_intersecting_image_tiles ──────────────────────────────────────────
-
-
-class TestGetIntersectingImageTiles:
-    def test_single_tile(self):
-        window = Window(0, 100, 0, 100)
-        tiles = get_intersecting_image_tiles(window, 256, 256)
-        assert tiles == [(0, 0)]
-
-    def test_multiple_tiles(self):
-        window = Window(0, 513, 0, 513)
-        tiles = get_intersecting_image_tiles(window, 256, 256)
-        assert len(tiles) == 9  # 3x3 grid
-
-    def test_offset_window(self):
-        window = Window(256, 512, 0, 256)
-        tiles = get_intersecting_image_tiles(window, 256, 256)
-        assert tiles == [(1, 0)]
 
 
 # ── _extract_key ─────────────────────────────────────────────────────────
