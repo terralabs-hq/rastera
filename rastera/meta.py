@@ -7,7 +7,9 @@ from typing import Any
 from affine import Affine
 import numpy as np
 
-from .geo import BBox, Window, bounds_from_transform
+from async_geotiff import Window
+
+from .geo import BBox, bounds_from_transform
 
 @dataclass
 class Profile:
@@ -86,10 +88,10 @@ class Profile:
 
     def adjust_to_window(self, window: Window) -> Profile:
         window_transform = self.transform * Affine.translation(
-            window.col_min, window.row_min
+            window.col_off, window.row_off
         )
-        width = window.win_width
-        height = window.win_height
+        width = window.width
+        height = window.height
         return replace(
             self,
             width=width,

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from affine import Affine
+from async_geotiff import Window
 from pyproj import Transformer
 
 if TYPE_CHECKING:
@@ -52,66 +53,47 @@ class BBox:
         return inter
 
 
-@dataclass(frozen=True, slots=True)
-class Window:
-    """Window coordinates and dimensions."""
+def window_from_bbox(
+    meta: Profile,
+    bbox: BBox | tuple[float, float, float, float],
+) -> Window:
+    """Return pixel window for a world-space bbox."""
 
-    col_min: int
-    col_max: int
-    row_min: int
-    row_max: int
+    # Map a world-space bbox to a clamped pixel window.
+    bbox = ensure_bbox(bbox)
+    inv = ~meta.transform
+    minx, miny, maxx, maxy = bbox.minx, bbox.miny, bbox.maxx, bbox.maxy
 
-    @property
-    def win_width(self) -> int:
-        return self.col_max - self.col_min
+    # top-left and bottom-right in pixel coords
+    col_min_f, row_max_f = _affine_apply(inv, minx, maxy)
+    col_max_f, row_min_f = _affine_apply(inv, maxx, miny)
 
-    @property
-    def win_height(self) -> int:
-        return self.row_max - self.row_min
+    # Match rasterio/GDAL window sizing: floor(offset) + round(span).
+    #
+    # rasterio passes float windows to GDALRasterIOEx (e.g. offset=5539.5,
+    # height=1800.6).  GDAL starts at floor(offset) and produces
+    # round(span) pixels.  We replicate that here so that native-
+    # resolution reads return the same shape AND pixel values as
+    # rasterio (confirmed RMSE=0).
+    #
+    # An alternative (floor/ceil on individual bounds) includes every
+    # pixel partially covered by the bbox, but produces +1 pixel vs
+    # rasterio whenever the bbox doesn't align to the source grid.
+    col_lo = min(col_min_f, col_max_f)
+    col_hi = max(col_min_f, col_max_f)
+    row_lo = min(row_min_f, row_max_f)
+    row_hi = max(row_min_f, row_max_f)
 
-    @classmethod
-    def from_bbox(
-        cls,
-        meta: Profile,
-        bbox: BBox | tuple[float, float, float, float],
-    ) -> Window:
-        """Return pixel window and its width/height for a world-space bbox."""
+    col_off = max(0, math.floor(col_lo))
+    row_off = max(0, math.floor(row_lo))
+    width = min(meta.width, col_off + math.floor(col_hi - col_lo + 0.5)) - col_off
+    height = min(meta.height, row_off + math.floor(row_hi - row_lo + 0.5)) - row_off
 
-        # Map a world-space bbox to a clamped pixel window.
-        bbox = ensure_bbox(bbox)
-        inv = ~meta.transform
-        minx, miny, maxx, maxy = bbox.minx, bbox.miny, bbox.maxx, bbox.maxy
+    if width <= 0 or height <= 0:
+        msg = "BBox does not intersect image"
+        raise ValueError(msg)
 
-        # top-left and bottom-right in pixel coords
-        col_min_f, row_max_f = _affine_apply(inv, minx, maxy)
-        col_max_f, row_min_f = _affine_apply(inv, maxx, miny)
-
-        # Match rasterio/GDAL window sizing: floor(offset) + round(span).
-        #
-        # rasterio passes float windows to GDALRasterIOEx (e.g. offset=5539.5,
-        # height=1800.6).  GDAL starts at floor(offset) and produces
-        # round(span) pixels.  We replicate that here so that native-
-        # resolution reads return the same shape AND pixel values as
-        # rasterio (confirmed RMSE=0).
-        #
-        # An alternative (floor/ceil on individual bounds) includes every
-        # pixel partially covered by the bbox, but produces +1 pixel vs
-        # rasterio whenever the bbox doesn't align to the source grid.
-        col_lo = min(col_min_f, col_max_f)
-        col_hi = max(col_min_f, col_max_f)
-        row_lo = min(row_min_f, row_max_f)
-        row_hi = max(row_min_f, row_max_f)
-
-        col_min = max(0, math.floor(col_lo))
-        row_min = max(0, math.floor(row_lo))
-        col_max = min(meta.width, col_min + math.floor(col_hi - col_lo + 0.5))
-        row_max = min(meta.height, row_min + math.floor(row_hi - row_lo + 0.5))
-
-        if col_min >= col_max or row_min >= row_max:
-            msg = "BBox does not intersect image"
-            raise ValueError(msg)
-
-        return Window(col_min, col_max, row_min, row_max)
+    return Window(col_off=col_off, row_off=row_off, width=width, height=height)
 
 
 

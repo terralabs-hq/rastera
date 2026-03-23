@@ -8,18 +8,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 import numpy as np
-from async_geotiff import GeoTIFF
-from async_geotiff import Window as AGWindow
+from async_geotiff import GeoTIFF, Window
 from async_tiff.store import from_url
 from pyproj import Transformer
 
 from .geo import (
     BBox,
-    Window,
     ensure_bbox,
     normalize_band_indices,
     resample_nearest,
     transform_bbox,
+    window_from_bbox,
 )
 from .meta import Profile
 
@@ -144,7 +143,7 @@ class AsyncGeoTIFF:
                 target_crs if set, else dataset CRS.
             bbox_crs: EPSG code of the bbox coordinate system. When set, the
                 bbox is transformed to the appropriate CRS automatically.
-            window: Pixel window (col_min, col_max, row_min, row_max). Can
+            window: Pixel window (col_off, row_off, width, height). Can
                 combine with target_resolution for resampling but not with
                 target_crs.
             band_indices: 1-based band indices to read.
@@ -304,18 +303,10 @@ class AsyncGeoTIFF:
         if bbox is None and window is None:
             bbox = readable_profile.bounds
         if window is None:
-            window = Window.from_bbox(readable_profile, bbox)
-
-        # Convert rastera Window to async-geotiff Window
-        ag_window = AGWindow(
-            col_off=window.col_min,
-            row_off=window.row_min,
-            width=window.win_width,
-            height=window.win_height,
-        )
+            window = window_from_bbox(readable_profile, bbox)
 
         # Use async-geotiff's built-in read (handles tile fetching + stitching)
-        result = await readable.read(window=ag_window)
+        result = await readable.read(window=window)
         data = result.data  # shape: (bands, height, width)
 
         # Select requested bands

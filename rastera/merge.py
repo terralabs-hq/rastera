@@ -355,7 +355,7 @@ def _mosaic_grid_from_bbox(
     """
     Create a pixel-aligned mosaic grid for `bbox` on the `base_transform` grid.
 
-    Unlike `Window.from_bbox`, this does NOT clamp to any particular image size.
+    Unlike `window_from_bbox`, this does NOT clamp to any particular image size.
     """
     inv = ~base_transform
 

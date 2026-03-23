@@ -1,6 +1,6 @@
 """Unit tests for Profile metadata."""
 
-from rastera.geo import Window
+from async_geotiff import Window
 from tests.conftest import make_profile
 
 
@@ -14,7 +14,7 @@ class TestProfile:
 
     def test_adjust_to_window(self):
         p = make_profile()
-        w = Window(10, 50, 20, 80)
+        w = Window(col_off=10, row_off=20, width=40, height=60)
         adjusted = p.adjust_to_window(w)
         assert adjusted.width == 40
         assert adjusted.height == 60

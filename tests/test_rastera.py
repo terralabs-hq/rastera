@@ -7,7 +7,9 @@ import pytest
 from affine import Affine
 
 from rastera.reader import AsyncGeoTIFF, _extract_key
-from rastera.geo import BBox, Window
+from async_geotiff import Window
+
+from rastera.geo import BBox
 from rastera.meta import Profile
 from tests.conftest import make_mock_geotiff
 
@@ -110,7 +112,7 @@ class TestRead:
         gt = make_mock_geotiff()
         obj = AsyncGeoTIFF("s3://b/k.tif", gt)
         with pytest.raises(ValueError, match="Cannot specify both"):
-            await obj.read(bbox=(0, 0, 100, 100), bbox_crs=32632, window=Window(0, 10, 0, 10))
+            await obj.read(bbox=(0, 0, 100, 100), bbox_crs=32632, window=Window(col_off=0, row_off=0, width=10, height=10))
 
     @pytest.mark.asyncio
     async def test_read_full_image(self):
@@ -136,7 +138,7 @@ class TestRead:
         result = _make_read_result((2, 16, 16), dtype=np.uint16, fill=42)
         gt.read = AsyncMock(return_value=result)
 
-        window = Window(4, 20, 4, 20)
+        window = Window(col_off=4, row_off=4, width=16, height=16)
         data, profile = await obj.read(window=window)
         assert data.shape == (2, 16, 16)
         np.testing.assert_array_equal(data, 42)

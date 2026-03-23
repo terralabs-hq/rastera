@@ -6,10 +6,10 @@ from affine import Affine
 
 from rastera.geo import (
     BBox,
-    Window,
     compute_paste_slices,
     resample_nearest,
     transform_bbox,
+    window_from_bbox,
 )
 from rastera.reader import _extract_key
 from tests.conftest import make_profile
@@ -58,33 +58,29 @@ class TestBBox:
 class TestWindow:
     def test_from_bbox_full(self):
         p = make_profile()
-        w = Window.from_bbox(p, BBox(0, 0, 1000, 1000))
-        assert w.col_min == 0 and w.col_max == 100
-        assert w.row_min == 0 and w.row_max == 100
+        w = window_from_bbox(p, BBox(0, 0, 1000, 1000))
+        assert w.col_off == 0 and w.width == 100
+        assert w.row_off == 0 and w.height == 100
 
     def test_from_bbox_subset(self):
         p = make_profile()
-        w = Window.from_bbox(p, BBox(100, 200, 500, 800))
-        assert w.win_width > 0 and w.win_height > 0
-        assert w.col_min >= 10 and w.col_max <= 50
+        w = window_from_bbox(p, BBox(100, 200, 500, 800))
+        assert w.width > 0 and w.height > 0
+        assert w.col_off >= 10 and w.col_off + w.width <= 50
 
     def test_from_bbox_no_intersect(self):
         p = make_profile()
         with pytest.raises(ValueError, match="does not intersect"):
-            Window.from_bbox(p, BBox(2000, 2000, 3000, 3000))
+            window_from_bbox(p, BBox(2000, 2000, 3000, 3000))
 
     def test_from_bbox_clamps(self):
         p = make_profile()
         # bbox extends beyond image
-        w = Window.from_bbox(p, BBox(-500, -500, 500, 500))
-        assert w.col_min == 0
-        assert w.col_max <= 100 and w.row_max <= 100
-        assert w.win_width > 0 and w.win_height > 0
+        w = window_from_bbox(p, BBox(-500, -500, 500, 500))
+        assert w.col_off == 0
+        assert w.col_off + w.width <= 100 and w.row_off + w.height <= 100
+        assert w.width > 0 and w.height > 0
 
-    def test_dimensions(self):
-        w = Window(10, 50, 20, 80)
-        assert w.win_width == 40
-        assert w.win_height == 60
 
 
 
