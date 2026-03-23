@@ -114,11 +114,25 @@ class TestNodataFromIfd:
     def test_no_other_tags(self):
         ifd = MagicMock()
         ifd.other_tags = None
+        ifd.gdal_nodata = None
         assert _nodata_from_ifd(ifd, np.dtype("f4")) is None
 
     def test_no_nodata_tag(self):
         ifd = make_mock_ifd()
         assert _nodata_from_ifd(ifd, np.dtype("f4")) is None
+
+    def test_gdal_nodata_attribute_preferred(self):
+        """async_tiff >=0.7 exposes gdal_nodata as a dedicated attribute."""
+        ifd = make_mock_ifd()
+        ifd.gdal_nodata = -32768
+        result = _nodata_from_ifd(ifd, np.dtype("i2"))
+        assert result == -32768
+
+    def test_gdal_nodata_attribute_float(self):
+        ifd = make_mock_ifd()
+        ifd.gdal_nodata = -9999.0
+        result = _nodata_from_ifd(ifd, np.dtype("f4"))
+        assert result == -9999.0
 
     def test_numeric_string(self):
         ifd = make_mock_ifd(nodata_tag="-9999")

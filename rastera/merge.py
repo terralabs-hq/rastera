@@ -100,6 +100,11 @@ async def merge_cogs(
         )
 
     # --- Path A: native merge (existing fast path) ---
+    # The output grid is snapped to the source COG's pixel grid so that
+    # pixels are copied 1:1 without resampling.  This differs from
+    # rasterio.merge / WarpedVRT which place the origin at the exact
+    # bbox corner, introducing a sub-pixel shift and nearest-neighbour
+    # resampling even when CRS and resolution already match.
     _require_compatible_merge_inputs(cogs)
 
     native_crs = base.profile.crs_epsg

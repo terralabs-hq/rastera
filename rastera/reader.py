@@ -40,6 +40,9 @@ _cache_max_size: int = 128
 # from high-resolution COGs (which can require 100-200+ tiles).
 # Keep DEFAULT_CONCURRENCY (merge.py) × _TILE_FETCH_BATCH_SIZE < 200
 # to stay within safe HTTP connection pool limits (reqwest/async_tiff).
+# On AWS EC2 in the same region as S3 (low latency, high bandwidth),
+# consider bumping to 96-128 via set_tile_fetch_batch_size() for
+# better throughput.
 _TILE_FETCH_BATCH_SIZE: int = 48
 
 

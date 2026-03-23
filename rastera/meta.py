@@ -169,9 +169,17 @@ def _dtype_from_ifd(ifd: Any) -> np.dtype:
 
 
 def _nodata_from_ifd(ifd: Any, dtype: np.dtype) -> int | float | None:
-    """Extract the GDAL_NODATA value from other_tags, coerced to match *dtype*."""
-    other = getattr(ifd, "other_tags", None) or {}
-    raw = other.get(_GDAL_NODATA_TAG)
+    """Extract the GDAL_NODATA value from the IFD, coerced to match *dtype*.
+
+    async_tiff >=0.7 exposes ``gdal_nodata`` as a dedicated attribute
+    (no longer inside ``other_tags``).  We try the dedicated attribute
+    first, then fall back to ``other_tags[42113]`` for older versions.
+    """
+    # Prefer the dedicated attribute (async_tiff >=0.7).
+    raw = getattr(ifd, "gdal_nodata", None)
+    if raw is None:
+        other = getattr(ifd, "other_tags", None) or {}
+        raw = other.get(_GDAL_NODATA_TAG)
     if raw is None:
         return None
 

@@ -42,6 +42,7 @@ def make_mock_ifd(
         projected_type=crs_epsg, geographic_type=geographic_type,
     )
     ifd.other_tags = {}
+    ifd.gdal_nodata = None
     if nodata_tag is not None:
         from rastera.meta import _GDAL_NODATA_TAG
         ifd.other_tags[_GDAL_NODATA_TAG] = nodata_tag
