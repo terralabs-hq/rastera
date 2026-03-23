@@ -40,26 +40,24 @@ data, profile = await rastera.merge(sources, bbox=bbox, bbox_crs=32633, target_r
 
 ## Concurrency and tile batching
 
-When merging, rastera reads multiple COGs concurrently (`max_concurrency`,
-default 6). Each COG fires all its tile HTTP range requests in parallel via
-`async_tiff.fetch_tiles()`. High-resolution COGs can require 100-200+ tiles,
-so without batching, `max_concurrency` COGs each firing ~150 requests = ~900
-simultaneous connections, which overwhelms reqwest's connection pool (client-side
-limit, not S3 throttling).
+When reading a COG, it fires all its tile HTTP range requests in parallel, handled 
+concurrently by async-tiff. Big, high-resolution COGs can have multiple hundred tiles.
 
-To prevent this, tile fetches are batched (`batch_size`, default 32) per COG.
-Peak concurrent requests = `max_concurrency × batch_size` (e.g. 6 × 32 = 192).
-Concurrent COGs still help throughput, because while one COG awaits a batch response,
-others fetch in parallel.
+When mosaicing images via `merge`, we need to read multiple COGs. Reading them sequentially 
+(all tiles for COG 1, then all tiles for COG 2, ...) leaves the network idle 
+between each COG while tiles are decoded and pasted into the mosaic.
+Reading them concurrently (`max_concurrency`, default 4) lets the next COG's
+tile fetches overlap with the previous COG's processing, keeping the network busy. 
+However, e.g. 4 COGs each firing ~150 tile requests means ~600
+simultaneous connections — depending on the client, enough to exhaust the 
+HTTP client's connection handling and cause failures.
 
-Tuning:
-```python
-import rastera
+To keep this in check, tile fetches during merges are batched (`tile_batch_size`,
+default 48) per COG. This introduces short pauses between batches within each
+COG, but those gaps are filled by other COGs fetching their batches concurrently.
+Depending on the client, `tile_batch_size` and `max_concurrency` parameters can be tuned, 
+but likely unnecessary. Standalone single-COG reads are unbatched and fire all tile requests at once.
 
-# Adjust tile batch size (default 32) — higher = more concurrent HTTP requests
-# per COG, e.g. on aws, lower = safer but potentially slower for single-COG reads
-rastera.set_tile_fetch_batch_size(64)
-```
 
 ## TODO maybe
 

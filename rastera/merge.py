@@ -21,6 +21,12 @@ from .meta import Profile
 
 DEFAULT_CONCURRENCY = 4
 
+# Per-COG tile fetch batch size during merges. Limits concurrent HTTP requests
+# per COG to prevent connection failures when multiple COGs are read in parallel.
+# Empirically determined: without batching, max_concurrency >= 4 fails on
+# high-resolution COGs (~150+ tiles each).
+DEFAULT_MERGE_BATCH_SIZE = 48
+
 
 async def merge_cogs(
     cogs: Sequence[AsyncGeoTIFF],
@@ -32,6 +38,7 @@ async def merge_cogs(
     target_crs: int | None = None,
     target_resolution: float | None = None,
     max_concurrency: int = DEFAULT_CONCURRENCY,
+    tile_batch_size: int = DEFAULT_MERGE_BATCH_SIZE,
 ) -> tuple[np.ndarray, Profile]:
     """
     Merge a bbox that may span multiple GeoTIFFs and return a single stitched array.
@@ -97,6 +104,7 @@ async def merge_cogs(
             target_crs=target_crs,
             target_resolution=target_resolution,
             max_concurrency=max_concurrency,
+            tile_batch_size=tile_batch_size,
         )
 
     # --- Path A: native merge (existing fast path) ---
@@ -140,7 +148,9 @@ async def merge_cogs(
         cog: AsyncGeoTIFF, sb: BBox
     ) -> tuple[np.ndarray, Profile]:
         indices = normalize_band_indices(band_indices, cog.ifd.samples_per_pixel)
-        return await cog._read_native(bbox=sb, band_indices=indices)
+        return await cog._read_native(
+            bbox=sb, band_indices=indices, _tile_batch_size=tile_batch_size
+        )
 
     out_array = await _gather_and_paste(
         contributing=sub_bboxes,
@@ -164,6 +174,7 @@ async def _merge_reprojected(
     target_crs: int | None,
     target_resolution: float | None,
     max_concurrency: int = DEFAULT_CONCURRENCY,
+    tile_batch_size: int = DEFAULT_MERGE_BATCH_SIZE,
 ) -> tuple[np.ndarray, Profile]:
     """Path B: merge with reprojection — supports mixed-CRS inputs."""
     base = cogs[0]
@@ -216,6 +227,7 @@ async def _merge_reprojected(
             target_crs=out_crs,
             target_resolution=res,
             band_indices=band_indices,
+            _tile_batch_size=tile_batch_size,
         )
 
     out_array = await _gather_and_paste(

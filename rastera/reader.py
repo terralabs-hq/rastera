@@ -35,17 +35,6 @@ _DEFAULT_REGION = (
 _tiff_cache: dict[str, TIFF] = {}
 _cache_max_size: int = 128
 
-# Maximum number of tiles to fetch in a single fetch_tiles() call.
-# Prevents HTTP connection pool exhaustion when reading large bboxes
-# from high-resolution COGs (which can require 100-200+ tiles).
-# Keep DEFAULT_CONCURRENCY (merge.py) × _TILE_FETCH_BATCH_SIZE < 200
-# to stay within safe HTTP connection pool limits (reqwest/async_tiff).
-# On AWS EC2 in the same region as S3 (low latency, high bandwidth),
-# consider bumping to 96-128 via set_tile_fetch_batch_size() for
-# better throughput.
-_TILE_FETCH_BATCH_SIZE: int = 48
-
-
 def clear_cache() -> None:
     """Clear the in-memory TIFF header cache."""
     _tiff_cache.clear()
@@ -57,16 +46,6 @@ def set_cache_size(n: int) -> None:
     _cache_max_size = n
     while len(_tiff_cache) > _cache_max_size:
         _tiff_cache.pop(next(iter(_tiff_cache)))
-
-
-def set_tile_fetch_batch_size(n: int) -> None:
-    """Set the maximum number of tiles per fetch_tiles() call.
-
-    Controls the peak number of concurrent HTTP range requests per COG read.
-    Total peak concurrent requests = max_concurrency × batch_size.
-    """
-    global _TILE_FETCH_BATCH_SIZE
-    _TILE_FETCH_BATCH_SIZE = n
 
 
 class AsyncGeoTIFF:
@@ -168,6 +147,7 @@ class AsyncGeoTIFF:
         band_indices: Sequence[int] | None = None,
         target_crs: int | None = None,
         target_resolution: float | None = None,
+        _tile_batch_size: int | None = None,
     ) -> tuple[np.ndarray, Profile]:
         """Read image data, optionally reprojecting and resampling.
 
@@ -211,7 +191,8 @@ class AsyncGeoTIFF:
 
         if not needs_reproject and not needs_resample:
             data, profile = await self._read_native(
-                bbox=bbox, window=window, band_indices=band_indices
+                bbox=bbox, window=window, band_indices=band_indices,
+                _tile_batch_size=_tile_batch_size,
             )
             return data, profile
 
@@ -225,7 +206,8 @@ class AsyncGeoTIFF:
         # Window + resample: read native pixels for the window, then resample
         if window is not None and needs_resample:
             native_arr, native_profile = await self._read_native(
-                window=window, band_indices=band_indices, ifd_index=ovr_idx
+                window=window, band_indices=band_indices, ifd_index=ovr_idx,
+                _tile_batch_size=_tile_batch_size,
             )
             target_bbox = native_profile.bounds
             res = target_resolution
@@ -273,7 +255,8 @@ class AsyncGeoTIFF:
 
         # Read from best overview (or full res if no suitable overview)
         native_arr, native_profile = await self._read_native(
-            bbox=src_bbox, band_indices=band_indices, ifd_index=ovr_idx
+            bbox=src_bbox, band_indices=band_indices, ifd_index=ovr_idx,
+            _tile_batch_size=_tile_batch_size,
         )
 
         # Build target grid
@@ -323,6 +306,7 @@ class AsyncGeoTIFF:
         window: Window | None = None,
         band_indices: Sequence[int] | None = None,
         ifd_index: int | None = None,
+        _tile_batch_size: int | None = None,
     ) -> tuple[np.ndarray, Profile]:
         """Read at native resolution/CRS, optionally from an overview IFD."""
         ifd_index = ifd_index if ifd_index is not None else self.ifd_index
@@ -366,12 +350,7 @@ class AsyncGeoTIFF:
         tile_coords = get_intersecting_image_tiles(
             window, ifd.tile_width, ifd.tile_height
         )
-        tiles = []
-        for i in range(0, len(tile_coords), _TILE_FETCH_BATCH_SIZE):
-            batch = tile_coords[i : i + _TILE_FETCH_BATCH_SIZE]
-            tiles.extend(
-                await self.tiff.fetch_tiles(batch, ifd_index)
-            )
+        tiles = await _fetch_tiles(self.tiff, tile_coords, ifd_index, _tile_batch_size)
 
         out_array = np.zeros(
             (len(band_indices), window.win_height, window.win_width),
@@ -482,3 +461,25 @@ async def _decode_tile_concurrently(tile: Any) -> tuple[int, int, Any]:
         return tx, ty, decoded
     except Exception as exc:
         raise RuntimeError(f"Failed to decode tile ({tx}, {ty}): {exc}") from exc
+
+
+async def _fetch_tiles(
+    tiff: Any,
+    tile_coords: list,
+    ifd_index: int,
+    batch_size: int | None,
+) -> list:
+    """Fetch tiles, optionally in batches.
+
+    When batch_size is None, all tiles are fetched in a single call.
+    During merges, a batch_size is passed to limit concurrent HTTP requests
+    per COG — empirically necessary to avoid connection failures at high
+    merge concurrency.
+    """
+    if batch_size is None or batch_size >= len(tile_coords):
+        return list(await tiff.fetch_tiles(tile_coords, ifd_index))
+    tiles = []
+    for i in range(0, len(tile_coords), batch_size):
+        batch = tile_coords[i : i + batch_size]
+        tiles.extend(await tiff.fetch_tiles(batch, ifd_index))
+    return tiles

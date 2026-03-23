@@ -11,7 +11,6 @@ from .reader import (
     _build_store,
     clear_cache,
     set_cache_size,
-    set_tile_fetch_batch_size,
 )
 from .merge import merge_cogs
 
@@ -20,7 +19,6 @@ __all__ = [
     "S3Store",
     "clear_cache",
     "set_cache_size",
-    "set_tile_fetch_batch_size",
     "open",
     "merge",
 ]
@@ -98,6 +96,7 @@ async def merge(
     fill_value: int | float = 0,
     target_crs: int | None = None,
     target_resolution: float | None = None,
+    tile_batch_size: int = 48,
 ) -> tuple:
     """
     Rasterio-style helper: read a bbox mosaic from multiple already-open sources.
@@ -118,4 +117,5 @@ async def merge(
         fill_value=fill_value,
         target_crs=target_crs,
         target_resolution=target_resolution,
+        tile_batch_size=tile_batch_size,
     )
