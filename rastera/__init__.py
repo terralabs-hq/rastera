@@ -23,6 +23,15 @@ __all__ = [
     "merge",
 ]
 
+try:
+    import geopandas  # noqa: F401
+    import obstore  # noqa: F401
+except ImportError:
+    pass
+else:
+    from .index import build_index, open_from_index
+    __all__ += ["build_index", "open_from_index"]
+
 
 @overload
 async def open(
