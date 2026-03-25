@@ -3,7 +3,7 @@
 **Async rasterio for COGs**, built on [async-geotiff](https://github.com/developmentseed/async-geotiff), no GDAL.
 
 - `read` and `merge` (multi-file, cross-crs) with `target_crs`, `target_resolution`, `bbox`, `window`
-- Parallel everywhere: concurrent file opens, coalesced tile downloads with Rust-native decoding
+- Optional persisted header cache (geoparquet) for ~6x faster opens
 - Built on [async-geotiff](https://github.com/developmentseed/async-geotiff) handling GeoTIFF parsing, async tile fetching, request coalescing, and Rust-native decompression
 
 **Note:** Only COGs & tiled GeoTIFFs are supported. Stripped (non-tiled) TIFFs will not work.
@@ -39,7 +39,7 @@ data, profile = await rastera.merge(sources, bbox=bbox, bbox_crs=32633, target_r
 
 ### COG header cache via geoparquet index
 
-Pre-cache COG headers in a geoparquet file to skip S3 round-trips on open (~6x faster, e.g. 0.2s vs 1.3s for 100 COGs).
+Pre-cache COG headers in a geoparquet file to skip S3 round-trips on open (~6x faster, e.g. 0.2s vs 1.3s for opening 100 COGs).
 Requires additionals dependencies, install via `pip install rastera[index]`
 
 ```python
