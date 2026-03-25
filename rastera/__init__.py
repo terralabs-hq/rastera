@@ -8,6 +8,7 @@ from async_tiff.store import S3Store
 
 from .reader import (
     AsyncGeoTIFF,
+    _bucket_url,
     _build_store,
     clear_cache,
     set_cache_size,
@@ -89,6 +90,14 @@ async def open(
 
     # Build a shared store from the first URI if none provided
     if store is None:
+        bucket = _bucket_url(uris[0])
+        mismatched = [u for u in uris[1:] if _bucket_url(u) != bucket]
+        if mismatched:
+            raise ValueError(
+                f"All URIs must belong to the same bucket/host when using a "
+                f"shared store. First URI resolves to {bucket!r}, but these "
+                f"do not: {mismatched}"
+            )
         store = _build_store(uris[0], **store_kwargs)
 
     return list(await asyncio.gather(

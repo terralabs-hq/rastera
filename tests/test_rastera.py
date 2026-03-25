@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from affine import Affine
 
+import rastera
 from rastera.reader import AsyncGeoTIFF, _extract_key
 from async_geotiff import Window
 
@@ -101,6 +102,15 @@ class TestOpen:
             "path/to/key.tif", store=existing_store, prefetch=32768
         )
         assert obj.uri == "s3://bucket/path/to/key.tif"
+
+    @pytest.mark.asyncio
+    async def test_open_multi_uri_cross_bucket_raises(self):
+        """Passing URIs from different buckets without an explicit store should raise."""
+        with pytest.raises(ValueError, match="same bucket/host"):
+            await rastera.open([
+                "s3://bucket-a/file1.tif",
+                "s3://bucket-b/file2.tif",
+            ])
 
 
 # ── read() ───────────────────────────────────────────────────────────────
