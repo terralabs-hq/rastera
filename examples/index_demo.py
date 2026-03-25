@@ -14,6 +14,9 @@ import sys
 import time
 import urllib.request
 
+import geopandas as gpd
+from shapely.geometry import box
+
 import rastera
 
 S3_OPTS = {"region": "us-west-2"}
@@ -85,8 +88,6 @@ async def cmd_build():
 
 async def cmd_open():
     """Compare opening files from index vs network."""
-    import geopandas as gpd
-
     gdf = gpd.read_parquet(INDEX_PATH)
     uris = gdf["uri"].tolist()
     n = len(uris)
@@ -104,9 +105,6 @@ async def cmd_open():
 
 async def cmd_query():
     """Spatial query + merge benchmark, index vs network (cold cache)."""
-    import geopandas as gpd
-    from shapely.geometry import box
-
     gdf = gpd.read_parquet(INDEX_PATH)
     print(f"Index: {len(gdf)} files\n", flush=True)
 

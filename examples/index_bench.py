@@ -13,6 +13,9 @@ import statistics
 import time
 import urllib.request
 
+import geopandas as gpd
+from shapely.geometry import box
+
 import rastera
 
 S3_OPTS = {"region": "us-west-2"}
@@ -87,9 +90,6 @@ def print_table(headers: list[str], rows: list[list[str]]):
 
 
 async def main():
-    import geopandas as gpd
-    from shapely.geometry import box
-
     # Setup
     print("Searching STAC for Sentinel-2 tiles (Scandinavia, June 2024)...", flush=True)
     uris = search_stac(bbox=[10, 55, 25, 65], limit=100)

@@ -45,7 +45,13 @@ class HeaderCacheStore:
         end: int | None = None,
         length: int | None = None,
     ) -> bytes:
-        actual_end = end if end is not None else (start + length if length is not None else None)
+        if end is not None:
+            actual_end = end
+        elif length is not None:
+            actual_end = start + length
+        else:
+            actual_end = None
+
         cached = self._cache.get(path)
         if cached is not None and actual_end is not None and actual_end <= len(cached):
             return cached[start:actual_end]
@@ -63,27 +69,24 @@ class HeaderCacheStore:
     ) -> list[bytes]:
         cached = self._cache.get(path)
         results: list[bytes | None] = [None] * len(starts)
-        uncached: list[tuple[int, int, int | None, int | None]] = []
+        uncached_indices: list[int] = []
+        uncached_starts: list[int] = []
+        uncached_ends: list[int] = []
 
         for i, s in enumerate(starts):
-            e = ends[i] if ends is not None else None
-            l = lengths[i] if lengths is not None else None
-            actual_end = e if e is not None else (s + l if l is not None else None)
-
-            if cached is not None and actual_end is not None and actual_end <= len(cached):
-                results[i] = cached[s:actual_end]
+            e = ends[i] if ends is not None else s + lengths[i]
+            if cached is not None and e <= len(cached):
+                results[i] = cached[s:e]
             else:
-                uncached.append((i, s, e, l))
+                uncached_indices.append(i)
+                uncached_starts.append(s)
+                uncached_ends.append(e)
 
-        if uncached:
+        if uncached_indices:
             fetched = await obstore.get_ranges_async(
-                self._inner,
-                path,
-                starts=[s for _, s, _, _ in uncached],
-                ends=[e for _, _, e, _ in uncached] if ends is not None else None,
-                lengths=[l for _, _, _, l in uncached] if lengths is not None else None,
+                self._inner, path, starts=uncached_starts, ends=uncached_ends,
             )
-            for (idx, _, _, _), data in zip(uncached, fetched):
+            for idx, data in zip(uncached_indices, fetched):
                 results[idx] = bytes(data)
 
         return results  # type: ignore[return-value]
@@ -110,22 +113,26 @@ async def build_index(
         **store_kwargs: Extra kwargs forwarded to ``async_tiff.store.from_url``.
 
     Returns:
-        A GeoDataFrame. Write with ``gdf.to_parquet(path)`` for geoparquet.
+        A GeoDataFrame with geometry in EPSG:4326.
+        Write with ``gdf.to_parquet(path)`` for geoparquet.
     """
     uris = list(uris)
     if not uris:
         return _empty_geodataframe()
 
     shared_store = store if store is not None else _build_store(uris[0], **store_kwargs)
-    obs, _ = _build_obstore(uris[0], **store_kwargs)
+    obs = _build_obstore(uris[0], **store_kwargs)
     sem = asyncio.Semaphore(concurrency)
 
     async def _open_and_fetch(uri: str) -> tuple[AsyncGeoTIFF, bytes]:
         async with sem:
-            src = await AsyncGeoTIFF.open(uri, store=shared_store, prefetch=prefetch)
-            key = _obstore_key(uri)
-            hdr = bytes(await obstore.get_range_async(obs, key, start=0, end=prefetch))
-            return src, hdr
+            try:
+                src = await AsyncGeoTIFF.open(uri, store=shared_store, prefetch=prefetch)
+                key = _obstore_key(uri)
+                hdr = bytes(await obstore.get_range_async(obs, key, start=0, end=prefetch))
+                return src, hdr
+            except Exception as exc:
+                raise RuntimeError(f"Failed to index {uri!r}") from exc
 
     results = await asyncio.gather(*(_open_and_fetch(u) for u in uris))
 
@@ -155,12 +162,17 @@ async def build_index(
         rows["res_x"].append(p.res[0])
         rows["res_y"].append(p.res[1])
         rows["dtype"].append(str(p.dtype))
-        rows["nodata"].append(p.nodata if p.nodata is not None else None)
+        rows["nodata"].append(p.nodata)
         rows["overviews"].append(json.dumps(p.overviews or []))
-        geometries.append(box(p.bounds.minx, p.bounds.miny, p.bounds.maxx, p.bounds.maxy))
+        # Reproject bounds to EPSG:4326 for a consistent geometry column
+        b = p.bounds
+        geom = box(b.minx, b.miny, b.maxx, b.maxy)
+        if p.crs_epsg is not None and p.crs_epsg != 4326:
+            t = Transformer.from_crs(p.crs_epsg, 4326, always_xy=True)
+            geom = ops.transform(t.transform, geom)
+        geometries.append(geom)
 
-    crs_epsg = rows["crs_epsg"][0] if rows["crs_epsg"] else None
-    return gpd.GeoDataFrame(rows, geometry=geometries, crs=f"EPSG:{crs_epsg}" if crs_epsg else None)
+    return gpd.GeoDataFrame(rows, geometry=geometries, crs="EPSG:4326")
 
 
 async def open_from_index(
@@ -183,7 +195,7 @@ async def open_from_index(
         gdf_or_path: A GeoDataFrame or path to a ``.parquet`` geoparquet file.
         bbox: Optional (minx, miny, maxx, maxy) spatial filter.
         bbox_crs: EPSG code of the bbox. When omitted, the bbox is assumed
-            to be in the same CRS as the index geometry column.
+            to be in the same CRS as the index geometry column (EPSG:4326).
         store: Optional pre-constructed object store.
         prefetch: Must match the prefetch value used when building the index.
         concurrency: Maximum number of concurrent file opens (default 100).
@@ -209,21 +221,18 @@ async def open_from_index(
         shared_store = store
         keys = [_extract_key(u) for u in uris]
     else:
-        shared_store, _ = _build_obstore(uris[0], **store_kwargs)
+        shared_store = _build_obstore(uris[0], **store_kwargs)
         keys = [_obstore_key(u) for u in uris]
 
-    # Single shared cache store for all files
-    cache = {key: hdr for key, hdr in zip(keys, headers)}
+    cache = dict(zip(keys, headers))
     cached_store = HeaderCacheStore(shared_store, cache)
     sem = asyncio.Semaphore(concurrency)
 
     async def _open_one(uri: str) -> AsyncGeoTIFF:
         async with sem:
-            # Fast path: reuse already-parsed GeoTIFF from rastera's Rust-backed cache
             cached_gt = get_cached_geotiff(uri)
             if cached_gt is not None:
                 return AsyncGeoTIFF(uri, cached_gt)
-            # Slow path: parse from cached header bytes via Python store
             return await AsyncGeoTIFF.open(uri, store=cached_store, prefetch=prefetch)
 
     return list(await asyncio.gather(*(_open_one(u) for u in uris)))
@@ -243,13 +252,12 @@ def _read_geoparquet(
         return gpd.read_parquet(path)
 
     meta_cols = [c for c in pq.read_schema(path).names if c != "header_bytes"]
-    gdf_meta = gpd.read_parquet(path, columns=meta_cols)
+    gdf_meta = gpd.read_parquet(path, columns=meta_cols).reset_index(drop=True)
 
     filtered = _filter_gdf(gdf_meta, bbox, bbox_crs)
     if len(filtered) == 0:
         return filtered
 
-    # Load header_bytes only for matched rows via Arrow take()
     row_indices = filtered.index.tolist()
     header_col = pq.read_table(path, columns=["header_bytes"]).column("header_bytes")
     filtered = filtered.copy()
@@ -282,34 +290,28 @@ def _obstore_key(uri: str) -> str:
     parsed = urlparse(uri)
     if parsed.scheme in ("s3", "gs", "az"):
         return parsed.path.lstrip("/")
-    return ""
+    if parsed.scheme in ("http", "https"):
+        return parsed.path.lstrip("/")
+    return parsed.path or uri
 
 
-def _build_obstore(uri: str, **store_kwargs: Any) -> tuple[Any, str]:
-    """Build an obstore-compatible object store and key for the given URI.
+def _build_obstore(uri: str, **store_kwargs: Any) -> Any:
+    """Build an obstore-compatible object store for the given URI.
 
-    For S3/GCS/AZ URIs, the store is rooted at the bucket with the object path
-    as key, enabling store reuse across files in the same bucket. For HTTP and
-    local paths, the store is rooted at the file URL with key ``""``.
-
-    Returns:
-        (store, key) tuple.
+    For S3/GCS/AZ URIs, the store is rooted at the bucket level.
+    For HTTP and local paths, the store is rooted at the file URL.
     """
     local_path = _resolve_local_path(uri)
     if local_path is not None:
-        store = obstore_from_url(local_path.parent.as_uri(), **store_kwargs)
-        return store, local_path.name
+        return obstore_from_url(local_path.parent.as_uri(), **store_kwargs)
     if _is_s3_uri(uri):
         store_kwargs.setdefault("skip_signature", True)
         store_kwargs.setdefault("region", _detect_region(uri))
     parsed = urlparse(uri)
     if parsed.scheme in ("s3", "gs", "az"):
         bucket_url = f"{parsed.scheme}://{parsed.netloc}"
-        key = parsed.path.lstrip("/")
-        store = obstore_from_url(bucket_url, **store_kwargs)
-        return store, key
-    store = obstore_from_url(uri, **store_kwargs)
-    return store, ""
+        return obstore_from_url(bucket_url, **store_kwargs)
+    return obstore_from_url(uri, **store_kwargs)
 
 
 def _empty_geodataframe() -> gpd.GeoDataFrame:
@@ -328,4 +330,5 @@ def _empty_geodataframe() -> gpd.GeoDataFrame:
             "overviews": [],
         },
         geometry=[],
+        crs="EPSG:4326",
     )
