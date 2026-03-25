@@ -16,6 +16,7 @@ from shapely.geometry import box
 
 from .reader import (
     AsyncGeoTIFF,
+    _bucket_url,
     _detect_region,
     _extract_key,
     _is_s3_uri,
@@ -295,7 +296,13 @@ def _filter_gdf(
 
 
 def _obstore_key(uri: str) -> str:
-    """Extract the object key for use with an obstore rooted at bucket level."""
+    """Extract the object key for use with an obstore rooted at bucket level.
+
+    Unlike ``_extract_key`` (used with async-tiff stores), this does not
+    distinguish virtual-hosted from path-style S3 HTTP URLs because
+    obstore handles that internally when the store is rooted via
+    ``_bucket_url``.
+    """
     local_path = _resolve_local_path(uri)
     if local_path is not None:
         return local_path.name
@@ -319,11 +326,7 @@ def _build_obstore(uri: str, **store_kwargs: Any) -> Any:
     if _is_s3_uri(uri):
         store_kwargs.setdefault("skip_signature", True)
         store_kwargs.setdefault("region", _detect_region(uri))
-    parsed = urlparse(uri)
-    if parsed.scheme in ("s3", "gs", "az"):
-        bucket_url = f"{parsed.scheme}://{parsed.netloc}"
-        return obstore_from_url(bucket_url, **store_kwargs)
-    return obstore_from_url(uri, **store_kwargs)
+    return obstore_from_url(_bucket_url(uri), **store_kwargs)
 
 
 def _empty_geodataframe() -> gpd.GeoDataFrame:
