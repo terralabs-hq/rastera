@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Sequence
 from typing import Any, Literal, overload
 
-from async_geotiff import Array
+from async_geotiff import Array, Window
 from async_tiff.store import S3Store
 
 from .reader import (
@@ -20,6 +20,7 @@ __all__ = [
     "Array",
     "AsyncGeoTIFF",
     "S3Store",
+    "Window",
     "clear_cache",
     "set_cache_size",
     "open",
