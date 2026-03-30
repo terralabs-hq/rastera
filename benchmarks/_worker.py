@@ -1,13 +1,7 @@
-"""Single-run benchmark runner for rastera or rasterio.
+"""Single-run benchmark worker for rastera or rasterio.
 
-Spawned as a fresh subprocess by the harness to avoid in-process caching.
-
-Usage:
-    python runner.py --library rastera --uri <cog_uri> \
-        --bbox minx,miny,maxx,maxy --bbox-crs 32633 \
-        [--target-crs 4326] [--target-resolution 100] \
-        [--save-array /tmp/out.npy]
-        [--mode read|merge] [--uri2 <second_cog_uri>]
+Internal: spawned as a fresh subprocess by run.py to avoid in-process caching.
+Not intended to be called directly.
 """
 from __future__ import annotations
 
@@ -20,7 +14,8 @@ import numpy as np
 
 
 def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
-                 target_crs: int | None, target_resolution: float | None) -> np.ndarray:
+                 target_crs: int | None, target_resolution: float | None,
+                 snap_to_grid: bool = False) -> tuple[np.ndarray, list]:
     import asyncio
     import rastera
 
@@ -29,14 +24,17 @@ def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
         result = await src.read(
             bbox=bbox, bbox_crs=bbox_crs,
             target_crs=target_crs, target_resolution=target_resolution,
+            snap_to_grid=snap_to_grid,
         )
-        return result.data
+        t = result.transform
+        return result.data, [t.a, t.b, t.c, t.d, t.e, t.f]
 
     return asyncio.run(_run())
 
 
 def merge_rastera(uris: list[str], bbox: tuple, bbox_crs: int,
-                  target_crs: int | None, target_resolution: float | None) -> np.ndarray:
+                  target_crs: int | None, target_resolution: float | None,
+                  snap_to_grid: bool = False) -> tuple[np.ndarray, list]:
     import asyncio
     import rastera
 
@@ -45,14 +43,16 @@ def merge_rastera(uris: list[str], bbox: tuple, bbox_crs: int,
         result = await rastera.merge(
             sources, bbox=bbox, bbox_crs=bbox_crs,
             target_crs=target_crs, target_resolution=target_resolution,
+            snap_to_grid=snap_to_grid,
         )
-        return result.data
+        t = result.transform
+        return result.data, [t.a, t.b, t.c, t.d, t.e, t.f]
 
     return asyncio.run(_run())
 
 
 def read_rasterio(uri: str, bbox: tuple, bbox_crs: int,
-                  target_crs: int | None, target_resolution: float | None) -> np.ndarray:
+                  target_crs: int | None, target_resolution: float | None) -> tuple[np.ndarray, list]:
     import os
     import rasterio
     from rasterio.vrt import WarpedVRT
@@ -105,37 +105,56 @@ def read_rasterio(uri: str, bbox: tuple, bbox_crs: int,
 
             with WarpedVRT(src, **vrt_kwargs) as vrt:
                 data = vrt.read(resampling=Resampling.nearest)
+                t = vrt.transform
+                transform = [t.a, t.b, t.c, t.d, t.e, t.f]
         else:
             # Same CRS, same resolution — just read the bbox window
             win = from_bounds(minx, miny, maxx, maxy, transform=src.transform)
             data = src.read(window=win, resampling=Resampling.nearest)
+            t = src.window_transform(win)
+            transform = [t.a, t.b, t.c, t.d, t.e, t.f]
 
-    return data
+    return data, transform
 
 
 def merge_rasterio(uris: list[str], bbox: tuple, bbox_crs: int,
-                   target_crs: int | None, target_resolution: float | None) -> np.ndarray:
+                   target_crs: int | None, target_resolution: float | None) -> tuple[np.ndarray, list]:
     """Merge using rasterio.merge.merge — matches the notebook pattern."""
     import os
     import rasterio
     from rasterio.merge import merge
-    from rasterio.warp import Resampling
+    from rasterio.crs import CRS
 
     os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 
     res = target_resolution or 10
+    out_crs = CRS.from_epsg(target_crs) if target_crs else None
+
     datasets = [rasterio.open(u) for u in uris]
+    vrts = []
     try:
-        array, transform = merge(
-            datasets,
+        if out_crs:
+            from rasterio.vrt import WarpedVRT
+            from rasterio.warp import Resampling
+            vrts = [WarpedVRT(ds, crs=out_crs, resampling=Resampling.nearest)
+                    for ds in datasets]
+            sources = vrts
+        else:
+            sources = datasets
+
+        array, out_transform = merge(
+            sources,
             bounds=tuple(bbox),
             res=res,
         )
     finally:
+        for v in vrts:
+            v.close()
         for ds in datasets:
             ds.close()
 
-    return array
+    t = out_transform
+    return array, [t.a, t.b, t.c, t.d, t.e, t.f]
 
 
 def main():
@@ -149,6 +168,7 @@ def main():
     parser.add_argument("--target-crs", type=int, default=None)
     parser.add_argument("--target-resolution", type=float, default=None)
     parser.add_argument("--save-array", default=None, help="Path to save output .npy")
+    parser.add_argument("--snap-to-grid", action="store_true", default=False)
     args = parser.parse_args()
 
     bbox = tuple(float(x) for x in args.bbox.split(","))
@@ -159,18 +179,20 @@ def main():
         if args.uri2:
             uris.append(args.uri2)
         if args.library == "rastera":
-            data = merge_rastera(uris, bbox, args.bbox_crs,
-                                 args.target_crs, args.target_resolution)
+            data, transform = merge_rastera(uris, bbox, args.bbox_crs,
+                                            args.target_crs, args.target_resolution,
+                                            snap_to_grid=args.snap_to_grid)
         else:
-            data = merge_rasterio(uris, bbox, args.bbox_crs,
-                                  args.target_crs, args.target_resolution)
+            data, transform = merge_rasterio(uris, bbox, args.bbox_crs,
+                                             args.target_crs, args.target_resolution)
     else:
         if args.library == "rastera":
-            data = read_rastera(args.uri, bbox, args.bbox_crs,
-                                args.target_crs, args.target_resolution)
+            data, transform = read_rastera(args.uri, bbox, args.bbox_crs,
+                                           args.target_crs, args.target_resolution,
+                                           snap_to_grid=args.snap_to_grid)
         else:
-            data = read_rasterio(args.uri, bbox, args.bbox_crs,
-                                 args.target_crs, args.target_resolution)
+            data, transform = read_rasterio(args.uri, bbox, args.bbox_crs,
+                                            args.target_crs, args.target_resolution)
     elapsed = time.perf_counter() - t0
 
     # Peak RSS in MB (macOS reports bytes, Linux reports KB)
@@ -187,6 +209,7 @@ def main():
         "dtype": str(data.dtype),
         "mean": round(float(np.mean(data)), 4),
         "peak_rss_mb": peak_rss_mb,
+        "transform": [round(v, 10) for v in transform],
     }
     print(json.dumps(result))
 

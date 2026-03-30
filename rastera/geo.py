@@ -118,8 +118,8 @@ def compute_paste_slices(
 
     # Map into destination pixel coordinates.
     dst_c0_f, dst_r0_f = _affine_apply(dst_inv_transform, wx0, wy0)
-    dst_c0 = int(round(dst_c0_f))
-    dst_r0 = int(round(dst_r0_f))
+    dst_c0 = math.floor(dst_c0_f + 0.5)
+    dst_r0 = math.floor(dst_r0_f + 0.5)
 
     # Initial (unclipped) target indices in destination pixel coordinates.
     dst_c1 = dst_c0 + src.width

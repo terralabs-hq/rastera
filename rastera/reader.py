@@ -197,6 +197,7 @@ class AsyncGeoTIFF:
         band_indices: Sequence[int] | None = None,
         target_crs: int | None = None,
         target_resolution: float | None = None,
+        snap_to_grid: bool = False,
     ) -> Array:
         """Read image data, optionally reprojecting and resampling.
 
@@ -211,6 +212,12 @@ class AsyncGeoTIFF:
             band_indices: 1-based band indices to read.
             target_crs: Output EPSG code. When set, data is reprojected.
             target_resolution: Output pixel size in target CRS units.
+            snap_to_grid: When False (default), the output bbox matches
+                the requested bbox exactly and nearest-neighbor resampling
+                selects source pixels, matching rasterio/GDAL behaviour.
+                When True, the output grid snaps to the source pixel grid
+                for exact 1:1 copies (no resampling); the bbox may shift
+                by up to 1 pixel.
 
         Returns:
             An ``async_geotiff.Array`` containing pixel data and spatial metadata.
@@ -229,17 +236,18 @@ class AsyncGeoTIFF:
             target_resolution, gt.res[0], rel_tol=1e-6
         )
 
-        # When bbox_crs is given with no reprojection/resampling, transform
-        # the bbox into the dataset's native CRS for the native read path.
-        if (
-            bbox is not None
-            and bbox_crs is not None
-            and not needs_reproject
-            and not needs_resample
-        ):
+        # Native fast path: snap_to_grid=True skips resampling by aligning
+        # the output to the source pixel grid (1:1 copy).  When False, we
+        # fall through to the resample path to honor the exact bbox origin.
+        # Window-based reads always use the native path (pixels are explicit).
+        use_native = not needs_reproject and not needs_resample and (
+            snap_to_grid or window is not None
+        )
+
+        if bbox is not None and bbox_crs is not None and use_native:
             bbox = transform_bbox(ensure_bbox(bbox), bbox_crs, self._crs_epsg)
 
-        if not needs_reproject and not needs_resample:
+        if use_native:
             return await self._read_native(
                 bbox=bbox, window=window, band_indices=band_indices,
             )
@@ -314,7 +322,27 @@ class AsyncGeoTIFF:
             res = min(res_x, res_y)
         else:
             res = gt.res[0]
-        out_transform, out_w, out_h = _grid_for_bbox(target_bbox, res)
+
+        if not needs_reproject and not needs_resample:
+            # Same CRS + resolution, snap_to_grid=False.
+            # GDAL's GDALRasterIOEx accepts fractional pixel windows and
+            # maps output pixels via:
+            #   src = floor(frac_offset + (dst + 0.5) * frac_span / buf_size)
+            # The ratio frac_span/buf_size differs from 1.0 by ~1e-4,
+            # which matters at half-pixel bbox boundaries.  We encode the
+            # same ratio in the resampling transform so resample_nearest
+            # reproduces GDAL's pixel selection.  The output Array gets
+            # the nominal pixel size (matching rasterio's window_transform).
+            out_w = max(1, round(target_bbox.width / res))
+            out_h = max(1, round(target_bbox.height / res))
+            resample_transform = Affine(
+                target_bbox.width / out_w, 0, target_bbox.minx,
+                0, -(target_bbox.height / out_h), target_bbox.maxy,
+            )
+            out_transform = Affine(res, 0, target_bbox.minx, 0, -res, target_bbox.maxy)
+        else:
+            out_transform, out_w, out_h = _grid_for_bbox(target_bbox, res)
+            resample_transform = out_transform
 
         # Reproject/resample
         transformer = None
@@ -324,7 +352,7 @@ class AsyncGeoTIFF:
         out_data = resample_nearest(
             native.data,
             src_transform=native.transform,
-            dst_transform=out_transform,
+            dst_transform=resample_transform,
             dst_width=out_w,
             dst_height=out_h,
             nodata=self._nodata,

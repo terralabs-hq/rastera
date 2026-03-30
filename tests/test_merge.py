@@ -146,6 +146,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
+
         )
         assert result.data.shape[0] == 1  # 1 band
         cog._read_native.assert_called_once()
@@ -212,6 +213,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 15, 10), bbox_crs=32632, band_indices=[1],
+
         )
         assert result.data.shape == (1, 10, 15)
         # cog1-only region: value 42

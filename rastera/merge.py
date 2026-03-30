@@ -31,6 +31,7 @@ async def merge_cogs(
     target_crs: int | None = None,
     target_resolution: float | None = None,
     method: Literal["first", "last"] = "first",
+    snap_to_grid: bool = False,
 ) -> Array:
     """
     Merge a bbox that may span multiple GeoTIFFs and return a single stitched array.
@@ -50,6 +51,11 @@ async def merge_cogs(
         method: Overlap strategy when multiple COGs cover the same pixel.
             ``"first"`` keeps the first valid pixel (matching rasterio.merge
             default). ``"last"`` lets later COGs overwrite earlier ones.
+        snap_to_grid: When False (default), the output bbox matches the
+            requested bbox exactly and nearest-neighbor resampling selects
+            source pixels, matching rasterio/GDAL behaviour. When True,
+            the output grid snaps to the source pixel grid for exact 1:1
+            copies (no resampling); the bbox may shift by up to 1 pixel.
 
     Returns:
         An ``async_geotiff.Array`` containing the merged mosaic.
@@ -87,7 +93,7 @@ async def merge_cogs(
         or not res_matches_target
     )
 
-    if needs_reproject:
+    if needs_reproject or not snap_to_grid:
         return await _merge_reprojected(
             cogs,
             bbox=bbox,
@@ -95,17 +101,14 @@ async def merge_cogs(
             band_indices=band_indices,
             n_out_bands=n_out_bands,
             fill_value=fill_value,
-            target_crs=target_crs,
-            target_resolution=target_resolution,
+            target_crs=target_crs or base._crs_epsg,
+            target_resolution=target_resolution or float(base_gt.transform.a),
             method=method,
         )
 
-    # --- Path A: native merge (existing fast path) ---
+    # --- Path A: native merge (snap_to_grid=True fast path) ---
     # The output grid is snapped to the source COG's pixel grid so that
-    # pixels are copied 1:1 without resampling.  This differs from
-    # rasterio.merge / WarpedVRT which place the origin at the exact
-    # bbox corner, introducing a sub-pixel shift and nearest-neighbour
-    # resampling even when CRS and resolution already match.
+    # pixels are copied 1:1 without resampling.
     _require_compatible_merge_inputs(cogs)
 
     native_crs = base._crs_epsg

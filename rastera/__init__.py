@@ -119,6 +119,7 @@ async def merge(
     target_crs: int | None = None,
     target_resolution: float | None = None,
     method: Literal["first", "last"] = "first",
+    snap_to_grid: bool = False,
 ) -> Array:
     """
     Rasterio-style helper: read a bbox mosaic from multiple already-open sources.
@@ -136,6 +137,11 @@ async def merge(
             ``"first"`` (default) keeps the first valid pixel, matching
             ``rasterio.merge`` behaviour. ``"last"`` lets later sources
             overwrite earlier ones.
+        snap_to_grid: When False (default), the output bbox matches the
+            requested bbox exactly and nearest-neighbor resampling selects
+            source pixels, matching rasterio/GDAL behaviour. When True,
+            the output grid snaps to the source pixel grid for exact 1:1
+            copies (no resampling); the bbox may shift by up to 1 pixel.
     """
     return await merge_cogs(
         sources,
@@ -146,4 +152,5 @@ async def merge(
         target_crs=target_crs,
         target_resolution=target_resolution,
         method=method,
+        snap_to_grid=snap_to_grid,
     )
