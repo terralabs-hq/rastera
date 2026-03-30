@@ -41,7 +41,7 @@ array = await rastera.merge(sources, bbox=bbox, bbox_crs=32633, target_resolutio
 ### COG header cache via geoparquet index
 
 Pre-cache COG headers in a geoparquet file to skip S3 round-trips on open (~6x faster, e.g. 0.2s vs 1.3s for opening 100 COGs).
-Requires additionals dependencies, install via `pip install rastera[index]`
+Requires additional dependencies, install via `pip install rastera[index]`
 
 ```python
 import rastera
@@ -56,6 +56,8 @@ gdf.to_parquet("index.parquet")
 sources = await rastera.open_from_index("index.parquet", bbox=(minx, miny, maxx, maxy), region="us-west-2")
 array = await rastera.merge(sources, bbox=bbox, bbox_crs=4326)
 ```
+
+`rastera.open()` also keeps an in-memory LRU cache of parsed headers within the session (default 128 entries, configurable via `set_cache_size()`), so repeated opens of the same URI skip the network fetch even without an index.
 
 
 

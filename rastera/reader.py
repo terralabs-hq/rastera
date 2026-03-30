@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace as dc_replace
 from typing import Any
@@ -27,16 +28,19 @@ _DEFAULT_REGION = (
     os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
 )
 
-# In-memory cache for parsed GeoTIFF objects, keyed by URI.
+# LRU cache for parsed GeoTIFF objects, keyed by URI.
 # Avoids re-fetching headers on repeated opens of the same file.
-_geotiff_cache: dict[str, GeoTIFF] = {}
+_geotiff_cache: OrderedDict[str, GeoTIFF] = OrderedDict()
 _cache_max_size: int = 128
 
 
 def get_cached_geotiff(uri: str) -> GeoTIFF | None:
     """Return a cached GeoTIFF object for *uri*, or None on cache miss."""
     if _cache_max_size > 0:
-        return _geotiff_cache.get(uri)
+        gt = _geotiff_cache.get(uri)
+        if gt is not None:
+            _geotiff_cache.move_to_end(uri)
+        return gt
     return None
 
 
@@ -46,11 +50,11 @@ def clear_cache() -> None:
 
 
 def set_cache_size(n: int) -> None:
-    """Set the maximum number of cached GeoTIFF objects. 0 disables caching."""
+    """Set the maximum number of cached GeoTIFF objects (LRU eviction). 0 disables caching."""
     global _cache_max_size
     _cache_max_size = n
     while len(_geotiff_cache) > _cache_max_size:
-        _geotiff_cache.pop(next(iter(_geotiff_cache)))
+        _geotiff_cache.popitem(last=False)
 
 
 # ---- Internal helpers for constructing output Arrays ----
@@ -160,6 +164,7 @@ class AsyncGeoTIFF:
                 (e.g. ``region``, ``skip_signature``, ``request_payer``).
         """
         if cache and _cache_max_size > 0 and uri in _geotiff_cache:
+            _geotiff_cache.move_to_end(uri)
             return cls(uri, _geotiff_cache[uri])
 
         if store is not None:
@@ -179,7 +184,7 @@ class AsyncGeoTIFF:
 
         if cache and _cache_max_size > 0:
             if len(_geotiff_cache) >= _cache_max_size:
-                _geotiff_cache.pop(next(iter(_geotiff_cache)))
+                _geotiff_cache.popitem(last=False)
             _geotiff_cache[uri] = geotiff
 
         return cls(uri, geotiff)

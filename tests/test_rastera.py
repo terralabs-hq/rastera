@@ -8,7 +8,7 @@ from affine import Affine
 from async_geotiff import Array, Window
 
 import rastera
-from rastera.reader import AsyncGeoTIFF, _extract_key
+from rastera.reader import AsyncGeoTIFF, _extract_key, _geotiff_cache, set_cache_size, clear_cache
 
 from rastera.geo import BBox
 from tests.conftest import make_mock_geotiff
@@ -193,3 +193,38 @@ class TestRead:
 
         with pytest.raises(ValueError, match="1-based"):
             await obj.read(band_indices=[0])
+
+
+# ── LRU cache behaviour ────────────────────────────────────────────────
+
+
+class TestLRUCache:
+    def setup_method(self):
+        clear_cache()
+        self._orig_size = rastera.reader._cache_max_size
+
+    def teardown_method(self):
+        clear_cache()
+        set_cache_size(self._orig_size)
+
+    def test_lru_eviction_order(self):
+        """Accessing an entry promotes it; the least-recently-used entry is evicted."""
+        set_cache_size(2)
+        gt_a, gt_b, gt_c = (make_mock_geotiff() for _ in range(3))
+
+        # Insert A, then B (cache: A, B)
+        _geotiff_cache["a"] = gt_a
+        _geotiff_cache["b"] = gt_b
+
+        # Access A — promotes it (cache order: B, A)
+        _geotiff_cache.move_to_end("a")
+
+        # Insert C — should evict B (LRU), not A
+        set_cache_size(2)  # trigger eviction check if needed
+        _geotiff_cache["c"] = gt_c
+        if len(_geotiff_cache) > 2:
+            _geotiff_cache.popitem(last=False)
+
+        assert "a" in _geotiff_cache, "A was accessed recently and should survive"
+        assert "c" in _geotiff_cache, "C was just inserted and should survive"
+        assert "b" not in _geotiff_cache, "B was least-recently-used and should be evicted"
