@@ -15,7 +15,8 @@ import numpy as np
 
 def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
                  target_crs: int | None, target_resolution: float | None,
-                 snap_to_grid: bool = False) -> tuple[np.ndarray, list]:
+                 snap_to_grid: bool = False,
+                 use_overviews: bool = True) -> tuple[np.ndarray, list]:
     import asyncio
     import rastera
 
@@ -24,7 +25,7 @@ def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
         result = await src.read(
             bbox=bbox, bbox_crs=bbox_crs,
             target_crs=target_crs, target_resolution=target_resolution,
-            snap_to_grid=snap_to_grid,
+            snap_to_grid=snap_to_grid, use_overviews=use_overviews,
         )
         t = result.transform
         return result.data, [t.a, t.b, t.c, t.d, t.e, t.f]
@@ -34,7 +35,8 @@ def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
 
 def merge_rastera(uris: list[str], bbox: tuple, bbox_crs: int,
                   target_crs: int | None, target_resolution: float | None,
-                  snap_to_grid: bool = False) -> tuple[np.ndarray, list]:
+                  snap_to_grid: bool = False,
+                  use_overviews: bool = True) -> tuple[np.ndarray, list]:
     import asyncio
     import rastera
 
@@ -43,7 +45,7 @@ def merge_rastera(uris: list[str], bbox: tuple, bbox_crs: int,
         result = await rastera.merge(
             sources, bbox=bbox, bbox_crs=bbox_crs,
             target_crs=target_crs, target_resolution=target_resolution,
-            snap_to_grid=snap_to_grid,
+            snap_to_grid=snap_to_grid, use_overviews=use_overviews,
         )
         t = result.transform
         return result.data, [t.a, t.b, t.c, t.d, t.e, t.f]
@@ -127,7 +129,6 @@ def merge_rasterio(uris: list[str], bbox: tuple, bbox_crs: int,
 
     os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
 
-    res = target_resolution or 10
     out_crs = CRS.from_epsg(target_crs) if target_crs else None
 
     # Transform bbox into the output CRS so merge() gets correct bounds
@@ -153,11 +154,10 @@ def merge_rasterio(uris: list[str], bbox: tuple, bbox_crs: int,
         else:
             sources = datasets
 
-        array, out_transform = merge(
-            sources,
-            bounds=merge_bounds,
-            res=res,
-        )
+        merge_kwargs = {"bounds": merge_bounds}
+        if target_resolution is not None:
+            merge_kwargs["res"] = target_resolution
+        array, out_transform = merge(sources, **merge_kwargs)
     finally:
         for v in vrts:
             v.close()
@@ -180,6 +180,8 @@ def main():
     parser.add_argument("--target-resolution", type=float, default=None)
     parser.add_argument("--save-array", default=None, help="Path to save output .npy")
     parser.add_argument("--snap-to-grid", action="store_true", default=False)
+    parser.add_argument("--no-overviews", action="store_true", default=False,
+                        help="Disable COG overview usage (rastera only)")
     args = parser.parse_args()
 
     bbox = tuple(float(x) for x in args.bbox.split(","))
@@ -192,7 +194,8 @@ def main():
         if args.library == "rastera":
             data, transform = merge_rastera(uris, bbox, args.bbox_crs,
                                             args.target_crs, args.target_resolution,
-                                            snap_to_grid=args.snap_to_grid)
+                                            snap_to_grid=args.snap_to_grid,
+                                            use_overviews=not args.no_overviews)
         else:
             data, transform = merge_rasterio(uris, bbox, args.bbox_crs,
                                              args.target_crs, args.target_resolution)
@@ -200,7 +203,8 @@ def main():
         if args.library == "rastera":
             data, transform = read_rastera(args.uri, bbox, args.bbox_crs,
                                            args.target_crs, args.target_resolution,
-                                           snap_to_grid=args.snap_to_grid)
+                                           snap_to_grid=args.snap_to_grid,
+                                           use_overviews=not args.no_overviews)
         else:
             data, transform = read_rasterio(args.uri, bbox, args.bbox_crs,
                                             args.target_crs, args.target_resolution)

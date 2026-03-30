@@ -66,6 +66,14 @@ SCENARIOS = [
         "target_resolution": 60.0,
     },
     {
+        "name": "Read: same CRS, 60m, no overviews",
+        "mode": "read",
+        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
+        "bbox_crs": 32633,
+        "target_resolution": 60.0,
+        "no_overviews": True,
+    },
+    {
         "name": "Read: cross-CRS reproject to EPSG:4326, 0.001 deg",
         "mode": "read",
         "bbox": "255804.0,4626619.0,274330.0,4644625.0",
@@ -132,6 +140,7 @@ def run_once(
     save_array: str | None = None,
     cold_cache: bool = False,
     snap_to_grid: bool = False,
+    no_overviews: bool = False,
 ) -> dict:
     if cold_cache:
         purge_page_cache()
@@ -162,6 +171,8 @@ def run_once(
         cmd += ["--save-array", save_array]
     if snap_to_grid and library == "rastera":
         cmd += ["--snap-to-grid"]
+    if no_overviews and library == "rastera":
+        cmd += ["--no-overviews"]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
@@ -334,6 +345,7 @@ def main():
         slug = slug.replace("(", "").replace(")", "")
         slug = "_".join(slug.split())
 
+        no_overviews = scenario.get("no_overviews", False)
         timings = {"rastera": [], "rasterio": []}
         memory = {"rastera": [], "rasterio": []}
 
@@ -353,7 +365,8 @@ def main():
             for library in ["rastera", "rasterio"]:
                 save_path = saved_paths[library]
                 result = run_once(
-                    scenario, library, save_array=save_path, cold_cache=args.cold_cache
+                    scenario, library, save_array=save_path,
+                    cold_cache=args.cold_cache, no_overviews=no_overviews,
                 )
                 if "error" not in result:
                     first_results[library] = result
@@ -415,7 +428,8 @@ def main():
         # Remaining runs for timing
         for run_idx in range(2, args.runs + 1):
             for library in ["rastera", "rasterio"]:
-                result = run_once(scenario, library, cold_cache=args.cold_cache)
+                result = run_once(scenario, library, cold_cache=args.cold_cache,
+                                  no_overviews=no_overviews)
                 if "error" not in result:
                     timings[library].append(result["elapsed_s"])
                     memory[library].append(result.get("peak_rss_mb", 0))
@@ -478,6 +492,7 @@ def main():
                     f"exact={exact_med:.3f}s  snapped={snap_med:.3f}s  "
                     f"overhead={overhead:+.1f}%"
                 )
+
 
 
 if __name__ == "__main__":

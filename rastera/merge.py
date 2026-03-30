@@ -32,6 +32,7 @@ async def merge_cogs(
     target_resolution: float | None = None,
     method: Literal["first", "last"] = "first",
     snap_to_grid: bool = False,
+    use_overviews: bool = True,
 ) -> Array:
     """
     Merge a bbox that may span multiple GeoTIFFs and return a single stitched array.
@@ -104,6 +105,7 @@ async def merge_cogs(
             target_crs=target_crs or base._crs_epsg,
             target_resolution=target_resolution or float(base_gt.transform.a),
             method=method,
+            use_overviews=use_overviews,
         )
 
     # --- Path A: native merge (snap_to_grid=True fast path) ---
@@ -159,6 +161,7 @@ async def _merge_reprojected(
     target_crs: int | None,
     target_resolution: float | None,
     method: Literal["first", "last"] = "first",
+    use_overviews: bool = True,
 ) -> Array:
     """Path B: merge with reprojection — supports mixed-CRS inputs."""
     base = cogs[0]
@@ -203,6 +206,7 @@ async def _merge_reprojected(
             target_crs=out_crs,
             target_resolution=res,
             band_indices=band_indices,
+            use_overviews=use_overviews,
         )
 
     out_data = await _gather_and_paste(
@@ -240,6 +244,12 @@ async def _gather_and_paste(
     Results are pasted in input order. Overlap is resolved by ``method``:
     ``"first"`` keeps the first valid pixel, ``"last"`` lets later COGs
     overwrite earlier ones.
+
+    TODO: consider reading all COGs concurrently via asyncio.gather and
+    pasting in order afterwards.  No threading issues (single event loop),
+    but higher peak memory since all tile data lives in memory at once.
+    The current sequential approach allows early exit for method="first"
+    when all pixels are filled.
     """
     out_array = np.full(
         (n_bands, dst_height, dst_width),

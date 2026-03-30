@@ -120,6 +120,7 @@ async def merge(
     target_resolution: float | None = None,
     method: Literal["first", "last"] = "first",
     snap_to_grid: bool = False,
+    use_overviews: bool = True,
 ) -> Array:
     """
     Rasterio-style helper: read a bbox mosaic from multiple already-open sources.
@@ -153,4 +154,5 @@ async def merge(
         target_resolution=target_resolution,
         method=method,
         snap_to_grid=snap_to_grid,
+        use_overviews=use_overviews,
     )

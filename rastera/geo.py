@@ -241,7 +241,8 @@ def resample_nearest(
             out[:, invalid] = fill
     else:
         # Coarse-grid + interpolation: transform sparse grid through pyproj,
-        # bilinearly interpolate to full resolution.
+        # bilinearly interpolate to full resolution.  In-place ops and eager
+        # deletion keep peak memory to 2 full-size index arrays instead of 6.
         src_col_f, src_row_f = _coarse_grid_transform(
             dst_width,
             dst_height,
@@ -249,18 +250,22 @@ def resample_nearest(
             src_transform,
             transformer,
         )
-        src_col = np.floor(src_col_f).astype(np.intp)
-        src_row = np.floor(src_row_f).astype(np.intp)
+        np.floor(src_col_f, out=src_col_f)
+        np.floor(src_row_f, out=src_row_f)
+        src_col = src_col_f.astype(np.intp)
+        del src_col_f
+        src_row = src_row_f.astype(np.intp)
+        del src_row_f
 
         valid = (src_col >= 0) & (src_col < w) & (src_row >= 0) & (src_row < h)
+        np.clip(src_col, 0, w - 1, out=src_col)
+        np.clip(src_row, 0, h - 1, out=src_row)
 
-        src_col_safe = np.clip(src_col, 0, w - 1)
-        src_row_safe = np.clip(src_row, 0, h - 1)
-        out = src_array[:, src_row_safe, src_col_safe]
+        out = src_array[:, src_row, src_col]
+        del src_col, src_row
 
         if nodata is not None and not np.all(valid):
-            fill = np.array(nodata, dtype=src_array.dtype)
-            out[:, ~valid] = fill
+            out[:, ~valid] = np.array(nodata, dtype=src_array.dtype)
 
     return out
 

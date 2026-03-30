@@ -146,7 +146,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
-
+            snap_to_grid=True,
         )
         assert result.data.shape[0] == 1  # 1 band
         cog._read_native.assert_called_once()
@@ -186,7 +186,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 15, 10), bbox_crs=32632, band_indices=[1],
-            method="last",
+            method="last", snap_to_grid=True,
         )
         # The overlap region (cols 5-9) should have cog2's value (last writer wins with method="last")
         assert result.data.shape == (1, 10, 15)
@@ -213,7 +213,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 15, 10), bbox_crs=32632, band_indices=[1],
-
+            snap_to_grid=True,
         )
         assert result.data.shape == (1, 10, 15)
         # cog1-only region: value 42
@@ -241,7 +241,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
-            method="last",
+            method="last", snap_to_grid=True,
         )
         # top half: cog2 is NaN so cog1's value (5.0) preserved
         assert np.all(result.data[0, :5, :] == 5.0)
@@ -264,7 +264,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
-            method="last",
+            method="last", snap_to_grid=True,
         )
         # nodata=None with method="last", so cog2's zeros overwrite cog1's 42s
         assert np.all(result.data == 0)
