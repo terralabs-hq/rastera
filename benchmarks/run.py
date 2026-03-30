@@ -90,7 +90,17 @@ SCENARIOS = [
         "compare_snap": True,
     },
     {
-        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 4326",
+        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 32633, 10m",
+        "mode": "merge",
+        "uri": URI,
+        "uri2": URI_32TQM,
+        "bbox": "11.8,41.7,12.5,42.2",
+        "bbox_crs": 4326,
+        "target_crs": 32633,
+        "target_resolution": 10.0,
+    },
+    {
+        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 4326, 0.001 deg",
         "mode": "merge",
         "uri": URI,
         "uri2": URI_32TQM,
@@ -166,8 +176,11 @@ def run_once(
 
 
 def compare_arrays(path_a: str, path_b: str) -> dict:
-    a_raw = np.load(path_a)
-    b_raw = np.load(path_b)
+    import rasterio
+    with rasterio.open(path_a) as src:
+        a_raw = src.read()
+    with rasterio.open(path_b) as src:
+        b_raw = src.read()
     a = a_raw.astype(np.float64)
     b = b_raw.astype(np.float64)
 
@@ -224,9 +237,9 @@ def print_accuracy(accuracy: dict):
     )
     if pct_diff > 50:
         print(
-            "    ↳ Expected: rastera reads from COG overviews (pre-averaged "
-            "pixels) while rasterio/GDAL WarpedVRT reads full-resolution "
-            "data. Overview pixels differ from nearest-neighbor on full-res."
+            "    ↳ Expected: different resampling pipelines (rastera uses COG "
+            "overviews + direct reprojection; rasterio/GDAL uses WarpedVRT "
+            "warp-then-downsample). Different source data and pixel selection."
         )
 
 
@@ -329,9 +342,9 @@ def main():
         saved_paths = {}
         if export_dir:
             for library in ["rastera", "rasterio"]:
-                saved_paths[library] = str(export_dir / f"{slug}_{library}.npy")
+                saved_paths[library] = str(export_dir / f"{slug}_{library}.tif")
         else:
-            for library, suffix in [("rastera", "_ra.npy"), ("rasterio", "_rio.npy")]:
+            for library, suffix in [("rastera", "_ra.tif"), ("rasterio", "_rio.tif")]:
                 f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
                 saved_paths[library] = f.name
                 f.close()

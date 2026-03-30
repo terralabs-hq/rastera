@@ -130,6 +130,17 @@ def merge_rasterio(uris: list[str], bbox: tuple, bbox_crs: int,
     res = target_resolution or 10
     out_crs = CRS.from_epsg(target_crs) if target_crs else None
 
+    # Transform bbox into the output CRS so merge() gets correct bounds
+    merge_bounds = tuple(bbox)
+    if out_crs and bbox_crs and target_crs != bbox_crs:
+        from pyproj import Transformer as ProjTransformer
+        t = ProjTransformer.from_crs(bbox_crs, target_crs, always_xy=True)
+        minx, miny, maxx, maxy = bbox
+        xs = [minx, maxx, minx, maxx]
+        ys = [miny, miny, maxy, maxy]
+        txs, tys = t.transform(xs, ys)
+        merge_bounds = (min(txs), min(tys), max(txs), max(tys))
+
     datasets = [rasterio.open(u) for u in uris]
     vrts = []
     try:
@@ -144,7 +155,7 @@ def merge_rasterio(uris: list[str], bbox: tuple, bbox_crs: int,
 
         array, out_transform = merge(
             sources,
-            bounds=tuple(bbox),
+            bounds=merge_bounds,
             res=res,
         )
     finally:
@@ -214,7 +225,20 @@ def main():
     print(json.dumps(result))
 
     if args.save_array:
-        np.save(args.save_array, data)
+        import rasterio as _rio
+        from rasterio.transform import Affine as _Affine
+        from rasterio.crs import CRS as _CRS
+
+        out_crs = _CRS.from_epsg(args.target_crs or args.bbox_crs)
+        out_transform = _Affine(*transform)
+        bands, height, width = data.shape
+        with _rio.open(
+            args.save_array, "w", driver="GTiff",
+            width=width, height=height, count=bands,
+            dtype=data.dtype, crs=out_crs, transform=out_transform,
+            compress="lzw",
+        ) as dst:
+            dst.write(data)
 
 
 if __name__ == "__main__":

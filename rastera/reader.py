@@ -252,12 +252,12 @@ class AsyncGeoTIFF:
                 bbox=bbox, window=window, band_indices=band_indices,
             )
 
-        # Pick the best overview for the target resolution
-        overview = (
-            self._best_overview_for_resolution(target_resolution)
-            if needs_resample
-            else None
-        )
+        # Pick the best overview for the target resolution.
+        # For same-CRS reads, target_resolution is already in source units.
+        # For cross-CRS, defer until we have both bboxes so we can convert.
+        overview = None
+        if needs_resample and not needs_reproject:
+            overview = self._best_overview_for_resolution(target_resolution)
 
         # Window + resample: read native pixels for the window, then resample
         if window is not None and needs_resample:
@@ -300,6 +300,12 @@ class AsyncGeoTIFF:
             src_bbox = transform_bbox(target_bbox, out_crs, src_crs)
         else:
             src_bbox = target_bbox
+
+        # Cross-CRS overview selection: convert target resolution to source CRS
+        # units using the bbox width ratio (e.g. 0.001° → ~83m)
+        if needs_resample and needs_reproject:
+            src_equiv_res = target_resolution * (src_bbox.width / target_bbox.width)
+            overview = self._best_overview_for_resolution(src_equiv_res)
 
         # Read from best overview (or full res if no suitable overview)
         native = await self._read_native(
