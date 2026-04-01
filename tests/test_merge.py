@@ -146,19 +146,17 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
-            snap_to_grid=True,
+            target_crs=32632, target_resolution=1.0, snap_to_grid=True,
         )
         assert result.data.shape[0] == 1  # 1 band
         cog._read_native.assert_called_once()
 
     async def test_no_cogs_raises(self):
         with pytest.raises(ValueError, match="at least one"):
-            await merge_cogs([], bbox=BBox(0, 0, 10, 10), bbox_crs=32632)
-
-    async def test_no_bbox_crs_raises(self):
-        cog = _make_cog()
-        with pytest.raises(ValueError, match="bbox_crs is required"):
-            await merge_cogs([cog], bbox=BBox(0, 0, 10, 10))
+            await merge_cogs(
+                [], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
+                target_crs=32632, target_resolution=1.0,
+            )
 
     async def test_fill_value_used(self):
         """When a COG doesn't intersect the bbox, the output should be fill_value."""
@@ -167,6 +165,7 @@ class TestMergeCogs:
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
             band_indices=[1], fill_value=9999,
+            target_crs=32632, target_resolution=1.0,
         )
         assert np.all(result.data == 9999)
 
@@ -186,7 +185,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 15, 10), bbox_crs=32632, band_indices=[1],
-            method="last", snap_to_grid=True,
+            target_crs=32632, target_resolution=1.0, method="last", snap_to_grid=True,
         )
         # The overlap region (cols 5-9) should have cog2's value (last writer wins with method="last")
         assert result.data.shape == (1, 10, 15)
@@ -213,7 +212,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 15, 10), bbox_crs=32632, band_indices=[1],
-            snap_to_grid=True,
+            target_crs=32632, target_resolution=1.0, snap_to_grid=True,
         )
         assert result.data.shape == (1, 10, 15)
         # cog1-only region: value 42
@@ -241,7 +240,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
-            method="last", snap_to_grid=True,
+            target_crs=32632, target_resolution=1.0, method="last", snap_to_grid=True,
         )
         # top half: cog2 is NaN so cog1's value (5.0) preserved
         assert np.all(result.data[0, :5, :] == 5.0)
@@ -264,7 +263,7 @@ class TestMergeCogs:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632, band_indices=[1],
-            method="last", snap_to_grid=True,
+            target_crs=32632, target_resolution=1.0, method="last", snap_to_grid=True,
         )
         # nodata=None with method="last", so cog2's zeros overwrite cog1's 42s
         assert np.all(result.data == 0)
@@ -286,7 +285,7 @@ class TestMergeReprojected:
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
-            band_indices=[1], target_crs=4326,
+            band_indices=[1], target_crs=4326, target_resolution=1.0,
         )
         # cog.read should be called (reprojected path) instead of _read_native
         cog.read.assert_called()
@@ -302,7 +301,7 @@ class TestMergeReprojected:
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
-            band_indices=[1], target_resolution=2.0,
+            band_indices=[1], target_crs=32632, target_resolution=2.0,
         )
         # Output should use the requested resolution
         assert result.res[0] == pytest.approx(2.0)
@@ -323,7 +322,7 @@ class TestMergeReprojected:
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
-            band_indices=[1], target_resolution=2.0, method="first",
+            band_indices=[1], target_crs=32632, target_resolution=2.0, method="first",
         )
         # method="first": cog1's values should take precedence everywhere
         assert np.all(result.data == 1)

@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Sequence
 from typing import Any, Literal, overload
 
 from async_geotiff import Array, Window
 from async_tiff.store import S3Store
 
-from .reader import (
-    AsyncGeoTIFF,
-    _bucket_url,
-    _build_store,
-    clear_cache,
-    set_cache_size,
-)
 from .merge import merge_cogs
+from .reader import AsyncGeoTIFF, clear_cache, open_many, set_cache_size
 
 __all__ = [
     "Array",
@@ -86,40 +79,22 @@ async def open(
         return await AsyncGeoTIFF.open(
             uri, store=store, prefetch=prefetch, cache=cache, **store_kwargs
         )
-
-    uris = list(uri)
-    if not uris:
-        return []
-
-    # Build a shared store from the first URI if none provided
-    if store is None:
-        bucket = _bucket_url(uris[0])
-        mismatched = [u for u in uris[1:] if _bucket_url(u) != bucket]
-        if mismatched:
-            raise ValueError(
-                f"All URIs must belong to the same bucket/host when using a "
-                f"shared store. First URI resolves to {bucket!r}, but these "
-                f"do not: {mismatched}"
-            )
-        store = _build_store(uris[0], **store_kwargs)
-
-    return list(await asyncio.gather(
-        *(AsyncGeoTIFF.open(u, store=store, prefetch=prefetch, cache=cache)
-          for u in uris)
-    ))
+    return await open_many(
+        uri, store=store, prefetch=prefetch, cache=cache, **store_kwargs
+    )
 
 
 async def merge(
     sources: Sequence[AsyncGeoTIFF],
     *,
     bbox: tuple[float, float, float, float],
-    bbox_crs: int | None = None,
+    bbox_crs: int,
     band_indices: Sequence[int] | None = None,
     fill_value: int | float = 0,
-    target_crs: int | None = None,
-    target_resolution: float | None = None,
+    target_crs: int,
+    target_resolution: float,
     method: Literal["first", "last"] = "first",
-    snap_to_grid: bool = False,
+    snap_to_grid: bool = True,
     use_overviews: bool = False,
 ) -> Array:
     """
@@ -128,21 +103,30 @@ async def merge(
     Pass in the `AsyncGeoTIFF` instances returned by :func:`open`. Any caching
     of headers/metadata happens on those `AsyncGeoTIFF` instances.
 
-    When *target_crs* or *target_resolution* is set (or when the inputs have
-    different CRS / resolution), each COG is individually reprojected into the
-    target grid before merging, allowing cross-CRS merges (e.g. adjacent UTM
-    zones).
+    When *target_crs* or *target_resolution* differs from the source (or when
+    the inputs have different CRS / resolution), each COG is individually
+    reprojected into the target grid before merging, allowing cross-CRS merges
+    (e.g. adjacent UTM zones).
 
     Args:
         method: Overlap strategy when multiple sources cover the same pixel.
             ``"first"`` (default) keeps the first valid pixel, matching
             ``rasterio.merge`` behaviour. ``"last"`` lets later sources
             overwrite earlier ones.
-        snap_to_grid: When False (default), the output bbox matches the
-            requested bbox exactly and nearest-neighbor resampling selects
-            source pixels, matching rasterio/GDAL behaviour. When True,
-            the output grid snaps to the source pixel grid for exact 1:1
-            copies (no resampling); the bbox may shift by up to 1 pixel.
+        snap_to_grid: When True (default), the output grid snaps to the
+            source pixel grid for exact 1:1 copies (no resampling); the
+            bbox may shift by up to 1 pixel. When False, the output bbox
+            matches the requested bbox exactly and nearest-neighbor
+            resampling selects source pixels, matching rasterio/GDAL
+            behaviour.
+        use_overviews: When True, reads from pre-computed COG overview
+            levels to save bandwidth. Overview pixels are resampled
+            aggregates, not original measurements — expect reduced
+            variance, dampened extremes, and altered spectral ratios
+            compared to full-resolution data. Suitable for thumbnails
+            or coarse segmentation; avoid for tasks requiring precise
+            pixel values such as spectral index computation or
+            per-pixel regression.
     """
     return await merge_cogs(
         sources,

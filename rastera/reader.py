@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace as dc_replace
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,6 +29,7 @@ from .geo import (
 _DEFAULT_REGION = (
     os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
 )
+_S3_REGION_RE = re.compile(r"[./]s3[.-]([a-z0-9-]+)\.amazonaws\.com")
 
 # LRU cache for parsed GeoTIFF objects, keyed by URI.
 # Avoids re-fetching headers on repeated opens of the same file.
@@ -180,9 +183,7 @@ class AsyncGeoTIFF:
                     local_path.name, store=store, prefetch=prefetch
                 )
             else:
-                if _is_s3_uri(uri):
-                    store_kwargs.setdefault("skip_signature", True)
-                    store_kwargs.setdefault("region", _detect_region(uri))
+                _apply_s3_defaults(store_kwargs, uri)
                 store = from_url(uri, **store_kwargs)
                 geotiff = await GeoTIFF.open("", store=store, prefetch=prefetch)
 
@@ -201,7 +202,7 @@ class AsyncGeoTIFF:
         band_indices: Sequence[int] | None = None,
         target_crs: int | None = None,
         target_resolution: float | None = None,
-        snap_to_grid: bool = False,
+        snap_to_grid: bool = True,
         use_overviews: bool = False,
     ) -> Array:
         """Read image data, optionally reprojecting and resampling.
@@ -217,12 +218,20 @@ class AsyncGeoTIFF:
             band_indices: 1-based band indices to read.
             target_crs: Output EPSG code. When set, data is reprojected.
             target_resolution: Output pixel size in target CRS units.
-            snap_to_grid: When False (default), the output bbox matches
-                the requested bbox exactly and nearest-neighbor resampling
-                selects source pixels, matching rasterio/GDAL behaviour.
-                When True, the output grid snaps to the source pixel grid
-                for exact 1:1 copies (no resampling); the bbox may shift
-                by up to 1 pixel.
+            snap_to_grid: When True (default), the output grid snaps to
+                the source pixel grid for exact 1:1 copies (no resampling);
+                the bbox may shift by up to 1 pixel. When False, the output
+                bbox matches the requested bbox exactly and nearest-neighbor
+                resampling selects source pixels, matching rasterio/GDAL
+                behaviour.
+            use_overviews: When True, reads from pre-computed COG overview
+                levels to save bandwidth. Overview pixels are resampled
+                aggregates, not original measurements — expect reduced
+                variance, dampened extremes, and altered spectral ratios
+                compared to full-resolution data. Suitable for thumbnails
+                or coarse segmentation; avoid for tasks requiring precise
+                pixel values such as spectral index computation or
+                per-pixel regression.
 
         Returns:
             An ``async_geotiff.Array`` containing pixel data and spatial metadata.
@@ -458,6 +467,34 @@ class AsyncGeoTIFF:
         )
 
 
+async def open_many(
+    uris: Sequence[str],
+    *,
+    store: Any = None,
+    prefetch: int = 32768,
+    cache: bool = True,
+    **store_kwargs: Any,
+) -> list[AsyncGeoTIFF]:
+    """Open multiple GeoTIFFs concurrently with a shared store."""
+    uris = list(uris)
+    if not uris:
+        return []
+    if store is None:
+        bucket = _bucket_url(uris[0])
+        mismatched = [u for u in uris[1:] if _bucket_url(u) != bucket]
+        if mismatched:
+            raise ValueError(
+                f"All URIs must belong to the same bucket/host when using a "
+                f"shared store. First URI resolves to {bucket!r}, but these "
+                f"do not: {mismatched}"
+            )
+        store = _build_store(uris[0], **store_kwargs)
+    return list(await asyncio.gather(
+        *(AsyncGeoTIFF.open(u, store=store, prefetch=prefetch, cache=cache)
+          for u in uris)
+    ))
+
+
 def _is_s3_uri(uri: str) -> bool:
     return uri.startswith("s3://") or ".s3." in uri or ".s3-" in uri
 
@@ -471,7 +508,7 @@ def _detect_region(uri: str) -> str:
     And path style:
         https://s3.<region>.amazonaws.com/...
     """
-    m = re.search(r"[./]s3[.-]([a-z0-9-]+)\.amazonaws\.com", uri)
+    m = _S3_REGION_RE.search(uri)
     if m:
         return m.group(1)
     return _DEFAULT_REGION
@@ -493,14 +530,19 @@ def _extract_key(uri: str) -> str:
     return parsed.path or uri
 
 
+def _apply_s3_defaults(store_kwargs: dict[str, Any], uri: str) -> None:
+    """Set default S3 credentials/region on *store_kwargs* when *uri* is an S3 URI."""
+    if _is_s3_uri(uri):
+        store_kwargs.setdefault("skip_signature", True)
+        store_kwargs.setdefault("region", _detect_region(uri))
+
+
 def _build_store(uri: str, **store_kwargs: Any) -> Any:
     """Build an object store rooted at the bucket/host level."""
     local_path = _resolve_local_path(uri)
     if local_path is not None:
         return from_url(local_path.parent.as_uri(), **store_kwargs)
-    if _is_s3_uri(uri):
-        store_kwargs.setdefault("skip_signature", True)
-        store_kwargs.setdefault("region", _detect_region(uri))
+    _apply_s3_defaults(store_kwargs, uri)
     # Root the store at the bucket, not the full object path
     bucket_url = _bucket_url(uri)
     return from_url(bucket_url, **store_kwargs)
@@ -522,9 +564,31 @@ def _bucket_url(uri: str) -> str:
 
 def _resolve_local_path(uri: str):
     """Return resolved Path if uri is local, else None."""
-    from pathlib import Path
-
     parsed = urlparse(uri)
     if parsed.scheme not in ("", "file") or _is_s3_uri(uri):
         return None
     return Path(parsed.path if parsed.scheme == "file" else uri).resolve()
+
+
+def _obstore_key(uri: str) -> str:
+    """Extract the object key for use with an obstore rooted at bucket level.
+
+    Unlike ``_extract_key`` (used with async-tiff stores), this does not
+    distinguish virtual-hosted from path-style S3 HTTP URLs because
+    obstore handles that internally when the store is rooted via
+    ``_bucket_url``.
+    """
+    local_path = _resolve_local_path(uri)
+    if local_path is not None:
+        return local_path.name
+    parsed = urlparse(uri)
+    if parsed.scheme in ("s3", "gs", "az"):
+        return parsed.path.lstrip("/")
+    if parsed.scheme in ("http", "https"):
+        host = parsed.netloc
+        path = parsed.path.lstrip("/")
+        if ".s3." not in host and ".s3-" not in host:
+            parts = path.split("/", 1)
+            return parts[1] if len(parts) == 2 else ""
+        return path
+    return parsed.path or uri

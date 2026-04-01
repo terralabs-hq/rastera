@@ -4,7 +4,6 @@ import asyncio
 import json
 from collections.abc import Sequence
 from typing import Any
-from urllib.parse import urlparse
 
 import geopandas as gpd
 import obstore
@@ -16,10 +15,10 @@ from shapely.geometry import box
 
 from .reader import (
     AsyncGeoTIFF,
+    _apply_s3_defaults,
     _bucket_url,
-    _detect_region,
     _extract_key,
-    _is_s3_uri,
+    _obstore_key,
     _resolve_local_path,
     get_cached_geotiff,
 )
@@ -295,33 +294,6 @@ def _filter_gdf(
     return gdf[gdf.intersects(query_geom)]
 
 
-def _obstore_key(uri: str) -> str:
-    """Extract the object key for use with an obstore rooted at bucket level.
-
-    Unlike ``_extract_key`` (used with async-tiff stores), this does not
-    distinguish virtual-hosted from path-style S3 HTTP URLs because
-    obstore handles that internally when the store is rooted via
-    ``_bucket_url``.
-    """
-    local_path = _resolve_local_path(uri)
-    if local_path is not None:
-        return local_path.name
-    parsed = urlparse(uri)
-    if parsed.scheme in ("s3", "gs", "az"):
-        return parsed.path.lstrip("/")
-    if parsed.scheme in ("http", "https"):
-        host = parsed.netloc
-        path = parsed.path.lstrip("/")
-        # Path-style: https://s3.<region>.amazonaws.com/<bucket>/<key>
-        # The store is rooted at the host, so strip the bucket prefix to
-        # match what _extract_key returns (and what AsyncGeoTIFF.open uses).
-        if ".s3." not in host and ".s3-" not in host:
-            parts = path.split("/", 1)
-            return parts[1] if len(parts) == 2 else ""
-        return path
-    return parsed.path or uri
-
-
 def _build_obstore(uri: str, **store_kwargs: Any) -> Any:
     """Build an obstore-compatible object store for the given URI.
 
@@ -331,9 +303,7 @@ def _build_obstore(uri: str, **store_kwargs: Any) -> Any:
     local_path = _resolve_local_path(uri)
     if local_path is not None:
         return obstore_from_url(local_path.parent.as_uri(), **store_kwargs)
-    if _is_s3_uri(uri):
-        store_kwargs.setdefault("skip_signature", True)
-        store_kwargs.setdefault("region", _detect_region(uri))
+    _apply_s3_defaults(store_kwargs, uri)
     return obstore_from_url(_bucket_url(uri), **store_kwargs)
 
 

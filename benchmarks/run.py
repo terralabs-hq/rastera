@@ -12,10 +12,10 @@ pixel size, bounds).
 
 Scenarios and expected accuracy
 -------------------------------
-1.  Read: same CRS, native resolution, not snapped — pixel-exact match
-    (0% differ).  Transform differs from rasterio (sub-pixel origin shift).
-2.  Read: same CRS, native resolution, snapped — pixel-exact match.
-    Transform matches rasterio (grid-aligned origin).
+1.  Read: same CRS, native resolution, snapped (default) — pixel-exact
+    match (0% differ).  Transform matches rasterio (grid-aligned origin).
+2.  Read: same CRS, native resolution, not snapped — pixel-exact match.
+    Transform differs from rasterio (sub-pixel origin shift).
 3.  Read: same CRS, 60 m, no overviews (default) — same pipeline as rasterio.
 4.  Read: same CRS, 60 m downsample via overviews — ~97% differ.  rastera
     reads from the 40 m COG overview (pre-averaged pixels); rasterio/GDAL
@@ -27,12 +27,19 @@ Scenarios and expected accuracy
     expected due to overview source pixels + different reprojection.
 7.  Read: large bbox at 120 m — ~97% differ.  Same overview explanation
     as scenario 4 (rastera uses the 80 m overview).
-8.  Merge: 2 adjacent UTM tiles, same CRS, 10 m, not snapped —
-    near-exact (<0.1%).  Transform differs (sub-pixel origin shift).
-9.  Merge: same as 8 but snapped — near-exact, transform matches.
-10. Merge: cross-CRS (32632 + 32633), reproject to 32633, 10 m.
-11. Merge: cross-CRS (32632 + 32633), reproject to 4326 — ~98% differ.
+8.  Merge: 2 adjacent UTM tiles, same CRS, 10 m, snapped (default) —
+    near-exact (<0.1%).  Transform matches rasterio.
+9.  Merge: same as 8 but not snapped — near-exact, transform differs
+    (sub-pixel origin shift).
+10. Merge: same CRS, downsampled to 60 m, no overviews — same pipeline
+    as rasterio.
+11. Merge: same CRS, downsampled to 60 m via overviews — ~97% differ.
+    Same overview explanation as scenario 4.
+12. Merge: cross-CRS (32632 + 32633), reproject to 32633, 10 m.
+13. Merge: cross-CRS (32632 + 32633), reproject to 4326 — ~98% differ.
     Combination of overview use and different reprojection implementations.
+14. Merge: cross-CRS (32632 + 32633), reproject to 4326 via overviews —
+    larger diff expected due to overview source pixels + reprojection.
 """
 
 from __future__ import annotations
@@ -61,20 +68,20 @@ URI_32TQM = "s3://e84-earth-search-sentinel-data/sentinel-2-c1-l2a/32/T/QM/2025/
 SCENARIOS = [
     # --- Single-file reads ---
     {
-        "name": "Read: same CRS, native resolution (bbox subset), not snapped - raster matches bbox exactly (default)",
+        "name": "Read: same CRS, native resolution (bbox subset), snapped to raster grid (rastera default)",
         "mode": "read",
         "bbox": "255804.0,4626619.0,274330.0,4644625.0",
         "bbox_crs": 32633,
     },
     {
-        "name": "Read: same CRS, native resolution (bbox subset), snapped to raster grid (rastera)",
+        "name": "Read: same CRS, native resolution (bbox subset), not snapped - raster matches bbox exactly (rasterio default)",
         "mode": "read",
         "bbox": "255804.0,4626619.0,274330.0,4644625.0",
         "bbox_crs": 32633,
-        "snap_to_grid": True,
+        "snap_to_grid": False,
     },
     {
-        "name": "Read: same CRS, downsampled to 60m, no overviews (default)",
+        "name": "Read: same CRS, downsampled to 60m, no overviews (both default)",
         "mode": "read",
         "bbox": "255804.0,4626619.0,274330.0,4644625.0",
         "bbox_crs": 32633,
@@ -116,19 +123,34 @@ SCENARIOS = [
     },
     # --- Multi-file merges ---
     {
-        "name": "Merge: 2 tiles, same CRS, 10m resolution, not snapped - raster matches bbox exactly (default)",
+        "name": "Merge: 2 tiles, same CRS, 10m resolution, snapped to raster grid (rastera default)",
         "mode": "merge",
         "bbox": "283838.0,4629464.7,326626.2,4648263.2",
         "bbox_crs": 32633,
         "target_resolution": 10.0,
     },
     {
-        "name": "Merge: 2 tiles, same CRS, 10m resolution, snapped to raster grid (rastera)",
+        "name": "Merge: 2 tiles, same CRS, 10m resolution, not snapped - raster matches bbox exactly (rasterio default)",
         "mode": "merge",
         "bbox": "283838.0,4629464.7,326626.2,4648263.2",
         "bbox_crs": 32633,
         "target_resolution": 10.0,
-        "snap_to_grid": True,
+        "snap_to_grid": False,
+    },
+    {
+        "name": "Merge: 2 tiles, same CRS, downsampled to 60m, no overviews (default)",
+        "mode": "merge",
+        "bbox": "283838.0,4629464.7,326626.2,4648263.2",
+        "bbox_crs": 32633,
+        "target_resolution": 60.0,
+    },
+    {
+        "name": "Merge: 2 tiles, same CRS, downsampled to 60m, via overviews (rastera)",
+        "mode": "merge",
+        "bbox": "283838.0,4629464.7,326626.2,4648263.2",
+        "bbox_crs": 32633,
+        "target_resolution": 60.0,
+        "use_overviews": True,
     },
     {
         "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 32633, 10m",
@@ -149,6 +171,17 @@ SCENARIOS = [
         "bbox_crs": 4326,
         "target_crs": 4326,
         "target_resolution": 0.001,
+    },
+    {
+        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 4326, 0.001 deg, via overviews (rastera)",
+        "mode": "merge",
+        "uri": URI,
+        "uri2": URI_32TQM,
+        "bbox": "11.8,41.7,12.5,42.2",
+        "bbox_crs": 4326,
+        "target_crs": 4326,
+        "target_resolution": 0.001,
+        "use_overviews": True,
     },
 ]
 
@@ -172,7 +205,7 @@ def run_once(
     library: str,
     save_array: str | None = None,
     cold_cache: bool = False,
-    snap_to_grid: bool = False,
+    snap_to_grid: bool = True,
     no_overviews: bool = False,
 ) -> dict:
     if cold_cache:
@@ -223,8 +256,8 @@ def run_once(
         cmd += ["--target-resolution", str(scenario["target_resolution"])]
     if save_array:
         cmd += ["--save-array", save_array]
-    if snap_to_grid and library == "rastera":
-        cmd += ["--snap-to-grid"]
+    if not snap_to_grid and library == "rastera":
+        cmd += ["--no-snap-to-grid"]
     if no_overviews and library == "rastera":
         cmd += ["--no-overviews"]
 
@@ -401,7 +434,7 @@ def main():
         slug = "_".join(slug.split())
 
         no_overviews = not scenario.get("use_overviews", False)
-        snap_to_grid = scenario.get("snap_to_grid", False)
+        snap_to_grid = scenario.get("snap_to_grid", True)
         timings = {"rastera": [], "rasterio": []}
         memory = {"rastera": [], "rasterio": []}
 

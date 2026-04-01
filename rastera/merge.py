@@ -25,13 +25,13 @@ async def merge_cogs(
     cogs: Sequence[AsyncGeoTIFF],
     *,
     bbox: BBox | tuple[float, float, float, float],
-    bbox_crs: int | None = None,
+    bbox_crs: int,
     band_indices: Sequence[int] | None = None,
     fill_value: int | float = 0,
-    target_crs: int | None = None,
-    target_resolution: float | None = None,
+    target_crs: int,
+    target_resolution: float,
     method: Literal["first", "last"] = "first",
-    snap_to_grid: bool = False,
+    snap_to_grid: bool = True,
     use_overviews: bool = False,
 ) -> Array:
     """
@@ -40,32 +40,37 @@ async def merge_cogs(
     Args:
         cogs: Sequence of opened AsyncGeoTIFF instances
         bbox: Bounding box of the merged image
-        bbox_crs: EPSG code of the bbox coordinate system. When set, the bbox
+        bbox_crs: EPSG code of the bbox coordinate system. The bbox
             is transformed to the COGs' native CRS automatically.
         band_indices: 1-based band indices to read
         fill_value: Value used for pixels in `bbox` that aren't covered by any
             input GeoTIFF (i.e. a "no data" fill; not always 0).
-        target_crs: Output EPSG code. When set, each COG is reprojected into
-            this CRS before merging. Allows merging COGs from different CRS
-            (e.g. adjacent UTM zones).
+        target_crs: Output EPSG code. Each COG is reprojected into
+            this CRS before merging when it differs from the source.
         target_resolution: Output pixel size in target CRS units.
         method: Overlap strategy when multiple COGs cover the same pixel.
             ``"first"`` keeps the first valid pixel (matching rasterio.merge
             default). ``"last"`` lets later COGs overwrite earlier ones.
-        snap_to_grid: When False (default), the output bbox matches the
-            requested bbox exactly and nearest-neighbor resampling selects
-            source pixels, matching rasterio/GDAL behaviour. When True,
-            the output grid snaps to the source pixel grid for exact 1:1
-            copies (no resampling); the bbox may shift by up to 1 pixel.
+        snap_to_grid: When True (default), the output grid snaps to the
+            source pixel grid for exact 1:1 copies (no resampling); the
+            bbox may shift by up to 1 pixel. When False, the output bbox
+            matches the requested bbox exactly and nearest-neighbor
+            resampling selects source pixels, matching rasterio/GDAL
+            behaviour.
+        use_overviews: When True, reads from pre-computed COG overview
+            levels to save bandwidth. Overview pixels are resampled
+            aggregates, not original measurements — expect reduced
+            variance, dampened extremes, and altered spectral ratios
+            compared to full-resolution data. Suitable for thumbnails
+            or coarse segmentation; avoid for tasks requiring precise
+            pixel values such as spectral index computation or
+            per-pixel regression.
 
     Returns:
         An ``async_geotiff.Array`` containing the merged mosaic.
     """
     if not cogs:
         raise ValueError("merge requires at least one AsyncGeoTIFF")
-
-    if bbox_crs is None:
-        raise ValueError("bbox_crs is required when bbox is provided")
 
     bbox = ensure_bbox(bbox)
     base = cogs[0]
@@ -82,8 +87,8 @@ async def merge_cogs(
         math.isclose(float(cog._geotiff.transform.a), float(base_gt.transform.a))
         for cog in cogs[1:]
     )
-    crs_matches_target = target_crs is None or target_crs == base._crs_epsg
-    res_matches_target = target_resolution is None or math.isclose(
+    crs_matches_target = target_crs == base._crs_epsg
+    res_matches_target = math.isclose(
         target_resolution, base_gt.res[0], rel_tol=1e-6
     )
 
@@ -102,8 +107,8 @@ async def merge_cogs(
             band_indices=band_indices,
             n_out_bands=n_out_bands,
             fill_value=fill_value,
-            target_crs=target_crs or base._crs_epsg,
-            target_resolution=target_resolution or float(base_gt.transform.a),
+            target_crs=target_crs,
+            target_resolution=target_resolution,
             method=method,
             use_overviews=use_overviews,
         )
@@ -158,31 +163,19 @@ async def _merge_reprojected(
     band_indices: Sequence[int] | None,
     n_out_bands: int,
     fill_value: int | float,
-    target_crs: int | None,
-    target_resolution: float | None,
+    target_crs: int,
+    target_resolution: float,
     method: Literal["first", "last"] = "first",
     use_overviews: bool = False,
 ) -> Array:
     """Path B: merge with reprojection — supports mixed-CRS inputs."""
     base = cogs[0]
     base_gt = base._geotiff
-    out_crs = target_crs if target_crs is not None else base._crs_epsg
+    out_crs = target_crs
 
     # Transform bbox into the output CRS
     target_bbox = transform_bbox(bbox, bbox_crs, out_crs)
-
-    # Determine output resolution
-    if target_resolution is not None:
-        res = target_resolution
-    else:
-        # Preserve native pixel density of the first COG
-        native_res = base_gt.res[0]
-        src_bbox = transform_bbox(target_bbox, out_crs, base._crs_epsg)
-        n_cols = max(1, round(src_bbox.width / native_res))
-        n_rows = max(1, round(src_bbox.height / native_res))
-        res_x = target_bbox.width / n_cols
-        res_y = target_bbox.height / n_rows
-        res = min(res_x, res_y)
+    res = target_resolution
 
     # Build output grid
     out_transform, out_w, out_h = _grid_for_bbox(target_bbox, res)
@@ -222,7 +215,7 @@ async def _merge_reprojected(
         method=method,
     )
 
-    geotiff_ref = _CrsNodata(CRS.from_epsg(out_crs), base._nodata) if target_crs else base_gt
+    geotiff_ref = _CrsNodata(CRS.from_epsg(out_crs), base._nodata)
     return _make_output_array(out_data, out_transform, out_w, out_h, geotiff_ref)
 
 
@@ -290,7 +283,8 @@ async def _gather_and_paste(
             src_valid = None
 
         if method == "first":
-            assert filled is not None
+            if filled is None:
+                raise RuntimeError("filled array required for method='first'")
             unfilled = ~filled[dst_rows, dst_cols]
             if src_valid is not None:
                 paste_mask = unfilled & src_valid

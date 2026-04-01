@@ -15,7 +15,7 @@ import numpy as np
 
 def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
                  target_crs: int | None, target_resolution: float | None,
-                 snap_to_grid: bool = False,
+                 snap_to_grid: bool = True,
                  use_overviews: bool = True) -> tuple[np.ndarray, list]:
     import asyncio
     import rastera
@@ -35,7 +35,7 @@ def read_rastera(uri: str, bbox: tuple, bbox_crs: int,
 
 def merge_rastera(uris: list[str], bbox: tuple, bbox_crs: int,
                   target_crs: int | None, target_resolution: float | None,
-                  snap_to_grid: bool = False,
+                  snap_to_grid: bool = True,
                   use_overviews: bool = True) -> tuple[np.ndarray, list]:
     import asyncio
     import rastera
@@ -179,7 +179,8 @@ def main():
     parser.add_argument("--target-crs", type=int, default=None)
     parser.add_argument("--target-resolution", type=float, default=None)
     parser.add_argument("--save-array", default=None, help="Path to save output .npy")
-    parser.add_argument("--snap-to-grid", action="store_true", default=False)
+    parser.add_argument("--no-snap-to-grid", action="store_true", default=False,
+                        help="Disable snap-to-grid (rastera only)")
     parser.add_argument("--no-overviews", action="store_true", default=False,
                         help="Disable COG overview usage (rastera only)")
     args = parser.parse_args()
@@ -194,7 +195,7 @@ def main():
         if args.library == "rastera":
             data, transform = merge_rastera(uris, bbox, args.bbox_crs,
                                             args.target_crs, args.target_resolution,
-                                            snap_to_grid=args.snap_to_grid,
+                                            snap_to_grid=not args.no_snap_to_grid,
                                             use_overviews=not args.no_overviews)
         else:
             data, transform = merge_rasterio(uris, bbox, args.bbox_crs,
@@ -203,7 +204,7 @@ def main():
         if args.library == "rastera":
             data, transform = read_rastera(args.uri, bbox, args.bbox_crs,
                                            args.target_crs, args.target_resolution,
-                                           snap_to_grid=args.snap_to_grid,
+                                           snap_to_grid=not args.no_snap_to_grid,
                                            use_overviews=not args.no_overviews)
         else:
             data, transform = read_rasterio(args.uri, bbox, args.bbox_crs,

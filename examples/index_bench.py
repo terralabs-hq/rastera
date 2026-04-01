@@ -159,13 +159,13 @@ async def main():
         rastera.clear_cache()
         t0 = time.perf_counter()
         sources = await rastera.open_from_index(gdf, bbox=qbbox, **S3_OPTS)
-        await rastera.merge(sources, bbox=qbbox, bbox_crs=4326)
+        await rastera.merge(sources, bbox=qbbox, bbox_crs=4326, target_crs=4326, target_resolution=10)
         t_query_idx.append(time.perf_counter() - t0)
 
         rastera.clear_cache()
         t0 = time.perf_counter()
         sources = await rastera.open(matched_uris, **S3_OPTS)
-        await rastera.merge(sources, bbox=qbbox, bbox_crs=4326)
+        await rastera.merge(sources, bbox=qbbox, bbox_crs=4326, target_crs=4326, target_resolution=10)
         t_query_net.append(time.perf_counter() - t0)
 
         print(f"  [{i+1:2d}] {len(matched_uris)} files  index={t_query_idx[-1]:.2f}s  network={t_query_net[-1]:.2f}s", flush=True)
