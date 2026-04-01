@@ -1,7 +1,4 @@
-"""Benchmark harness: spawns fresh subprocesses for fair comparison.
-
-Usage:
-    python benchmarks/run.py [--runs 5]
+"""Benchmark harness: shared infrastructure for read and merge benchmarks.
 
 Each run is a fresh Python process so neither library benefits from
 in-process caching (rastera TIFF header cache, GDAL VSI cache).
@@ -10,36 +7,9 @@ Measures wall-clock time, peak RSS, output accuracy (pixel comparison),
 result consistency (mean, dtype, shape), and spatial alignment (transform,
 pixel size, bounds).
 
-Scenarios and expected accuracy
--------------------------------
-1.  Read: same CRS, native resolution, snapped (default) — pixel-exact
-    match (0% differ).  Transform matches rasterio (grid-aligned origin).
-2.  Read: same CRS, native resolution, not snapped — pixel-exact match.
-    Transform differs from rasterio (sub-pixel origin shift).
-3.  Read: same CRS, 60 m, no overviews (default) — same pipeline as rasterio.
-4.  Read: same CRS, 60 m downsample via overviews — ~97% differ.  rastera
-    reads from the 40 m COG overview (pre-averaged pixels); rasterio/GDAL
-    WarpedVRT reads full 10 m resolution.  Different source data, not a bug.
-5.  Read: cross-CRS reproject to EPSG:4326 (default) — ~2% differ.
-    Different reprojection implementations (pyproj + numpy NN vs GDAL
-    warp kernel).
-6.  Read: cross-CRS reproject to EPSG:4326 via overviews — larger diff
-    expected due to overview source pixels + different reprojection.
-7.  Read: large bbox at 120 m — ~97% differ.  Same overview explanation
-    as scenario 4 (rastera uses the 80 m overview).
-8.  Merge: 2 adjacent UTM tiles, same CRS, 10 m, snapped (default) —
-    near-exact (<0.1%).  Transform matches rasterio.
-9.  Merge: same as 8 but not snapped — near-exact, transform differs
-    (sub-pixel origin shift).
-10. Merge: same CRS, downsampled to 60 m, no overviews — same pipeline
-    as rasterio.
-11. Merge: same CRS, downsampled to 60 m via overviews — ~97% differ.
-    Same overview explanation as scenario 4.
-12. Merge: cross-CRS (32632 + 32633), reproject to 32633, 10 m.
-13. Merge: cross-CRS (32632 + 32633), reproject to 4326 — ~98% differ.
-    Combination of overview use and different reprojection implementations.
-14. Merge: cross-CRS (32632 + 32633), reproject to 4326 via overviews —
-    larger diff expected due to overview source pixels + reprojection.
+Usage:
+    python -m benchmarks.read [--runs 5]
+    python -m benchmarks.merge [--runs 5]
 """
 
 from __future__ import annotations
@@ -49,6 +19,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
@@ -64,126 +35,6 @@ URI = "s3://e84-earth-search-sentinel-data/sentinel-2-c1-l2a/33/T/TG/2025/7/S2B_
 URI_33TUG = "s3://e84-earth-search-sentinel-data/sentinel-2-c1-l2a/33/T/UG/2025/7/S2B_T33TUG_20250703T100029_L2A/B03.tif"
 # Adjacent tile in different UTM zone (EPSG:32632) — overlaps 33TTG across zone boundary
 URI_32TQM = "s3://e84-earth-search-sentinel-data/sentinel-2-c1-l2a/32/T/QM/2025/7/S2B_T32TQM_20250703T100029_L2A/B03.tif"
-
-SCENARIOS = [
-    # --- Single-file reads ---
-    {
-        "name": "Read: same CRS, native resolution (bbox subset), snapped to raster grid (rastera default)",
-        "mode": "read",
-        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
-        "bbox_crs": 32633,
-    },
-    {
-        "name": "Read: same CRS, native resolution (bbox subset), not snapped - raster matches bbox exactly (rasterio default)",
-        "mode": "read",
-        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
-        "bbox_crs": 32633,
-        "snap_to_grid": False,
-    },
-    {
-        "name": "Read: same CRS, downsampled to 60m, no overviews (both default)",
-        "mode": "read",
-        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
-        "bbox_crs": 32633,
-        "target_resolution": 60.0,
-    },
-    {
-        "name": "Read: same CRS, downsampled to 60m via overviews (rastera)",
-        "mode": "read",
-        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
-        "bbox_crs": 32633,
-        "target_resolution": 60.0,
-        "use_overviews": True,
-    },
-    {
-        "name": "Read: cross-CRS reproject to EPSG:4326, 0.001 deg, no overviews (default)",
-        "mode": "read",
-        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
-        "bbox_crs": 32633,
-        "target_crs": 4326,
-        "target_resolution": 0.001,
-        "reproject_bbox": True,
-    },
-    {
-        "name": "Read: cross-CRS reproject to EPSG:4326, 0.001 deg, via overviews (rastera)",
-        "mode": "read",
-        "bbox": "255804.0,4626619.0,274330.0,4644625.0",
-        "bbox_crs": 32633,
-        "target_crs": 4326,
-        "target_resolution": 0.001,
-        "reproject_bbox": True,
-        "use_overviews": True,
-    },
-    {
-        "name": "Read: large bbox, overview resolution (120m)",
-        "mode": "read",
-        "bbox": "200000.0,4600000.0,300000.0,4700000.0",
-        "bbox_crs": 32633,
-        "target_resolution": 120.0,
-    },
-    # --- Multi-file merges ---
-    {
-        "name": "Merge: 2 tiles, same CRS, 10m resolution, snapped to raster grid (rastera default)",
-        "mode": "merge",
-        "bbox": "283838.0,4629464.7,326626.2,4648263.2",
-        "bbox_crs": 32633,
-        "target_resolution": 10.0,
-    },
-    {
-        "name": "Merge: 2 tiles, same CRS, 10m resolution, not snapped - raster matches bbox exactly (rasterio default)",
-        "mode": "merge",
-        "bbox": "283838.0,4629464.7,326626.2,4648263.2",
-        "bbox_crs": 32633,
-        "target_resolution": 10.0,
-        "snap_to_grid": False,
-    },
-    {
-        "name": "Merge: 2 tiles, same CRS, downsampled to 60m, no overviews (default)",
-        "mode": "merge",
-        "bbox": "283838.0,4629464.7,326626.2,4648263.2",
-        "bbox_crs": 32633,
-        "target_resolution": 60.0,
-    },
-    {
-        "name": "Merge: 2 tiles, same CRS, downsampled to 60m, via overviews (rastera)",
-        "mode": "merge",
-        "bbox": "283838.0,4629464.7,326626.2,4648263.2",
-        "bbox_crs": 32633,
-        "target_resolution": 60.0,
-        "use_overviews": True,
-    },
-    {
-        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 32633, 10m",
-        "mode": "merge",
-        "uri": URI,
-        "uri2": URI_32TQM,
-        "bbox": "11.8,41.7,12.5,42.2",
-        "bbox_crs": 4326,
-        "target_crs": 32633,
-        "target_resolution": 10.0,
-    },
-    {
-        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 4326, 0.001 deg",
-        "mode": "merge",
-        "uri": URI,
-        "uri2": URI_32TQM,
-        "bbox": "11.8,41.7,12.5,42.2",
-        "bbox_crs": 4326,
-        "target_crs": 4326,
-        "target_resolution": 0.001,
-    },
-    {
-        "name": "Merge: 2 tiles, cross-CRS (32632+32633), reproject to 4326, 0.001 deg, via overviews (rastera)",
-        "mode": "merge",
-        "uri": URI,
-        "uri2": URI_32TQM,
-        "bbox": "11.8,41.7,12.5,42.2",
-        "bbox_crs": 4326,
-        "target_crs": 4326,
-        "target_resolution": 0.001,
-        "use_overviews": True,
-    },
-]
 
 
 def purge_page_cache():
@@ -273,6 +124,42 @@ def run_once(
     return json.loads(result.stdout.strip())
 
 
+def check_borders(path: str, threshold: float = 0.5) -> dict:
+    """Check that no border row/column is majority a single value.
+
+    Returns a dict with per-edge results and an overall ``ok`` flag.
+    ``threshold`` is the fraction above which a border is considered bad
+    (default 0.5 = majority).
+    """
+    import rasterio
+
+    with rasterio.open(path) as src:
+        arr = src.read()  # (bands, H, W)
+
+    edges = {
+        "top": arr[:, 0, :],
+        "bottom": arr[:, -1, :],
+        "left": arr[:, :, 0],
+        "right": arr[:, :, -1],
+    }
+
+    results = {}
+    ok = True
+    for name, edge in edges.items():
+        vals, counts = np.unique(edge, return_counts=True)
+        dominant_frac = float(counts.max()) / edge.size
+        bad = dominant_frac > threshold
+        if bad:
+            ok = False
+        results[name] = {
+            "dominant_value": float(vals[counts.argmax()]),
+            "dominant_frac": round(dominant_frac, 3),
+            "bad": bad,
+        }
+
+    return {"ok": ok, "edges": results}
+
+
 def compare_arrays(path_a: str, path_b: str) -> dict:
     import rasterio
 
@@ -313,37 +200,34 @@ def compare_arrays(path_a: str, path_b: str) -> dict:
     return result
 
 
-def print_accuracy(accuracy: dict):
+def format_accuracy(accuracy: dict) -> list[str]:
+    lines = []
     rmse_pct = accuracy.get("rmse_pct_of_range", 0)
     pct_diff = accuracy["pct_pixels_differ"]
 
     if not accuracy["shapes_exact_match"]:
-        print(
+        lines.append(
             f"    ⚠️  Shapes differ: "
             f"rastera={accuracy['shape_rastera']} "
             f"rasterio={accuracy['shape_rasterio']}"
         )
-        print(f"    Comparing overlap: {accuracy['compared_shape']}")
+        lines.append(f"    Comparing overlap: {accuracy['compared_shape']}")
     else:
-        print(f"    ✅ Shape: {accuracy['shape_rastera']}")
-    print(
+        lines.append(f"    ✅ Shape: {accuracy['shape_rastera']}")
+    lines.append(
         f"    {'✅' if rmse_pct < 1 else '⚠️' if rmse_pct < 5 else '❌'} "
         f"RMSE: {accuracy['rmse']}  ({rmse_pct}% of data range)"
     )
-    print(
+    lines.append(
         f"    {'✅' if pct_diff < 1 else '⚠️' if pct_diff < 10 else '❌'} "
         f"Pixels that differ: {pct_diff}%"
     )
-    if pct_diff > 50:
-        print(
-            "    ↳ Expected: different overview strategies (rastera reads "
-            "pre-built COG overviews; rasterio/GDAL downsamples from "
-            "full-resolution data). Different source pixels."
-        )
+    return lines
 
 
-def print_spatial_alignment(r: dict, rio: dict):
+def format_spatial_alignment(r: dict, rio: dict, snap_to_grid: bool = True) -> list[str]:
     """Compare transforms (origin, pixel size, bounds) between two results."""
+    lines = []
     t_r = r["transform"]  # [a, b, c, d, e, f]
     t_rio = rio["transform"]
     s_r, s_rio = r["shape"], rio["shape"]
@@ -376,26 +260,75 @@ def print_spatial_alignment(r: dict, rio: dict):
     shift_ok = abs(px_shift_x) < 0.01 and abs(px_shift_y) < 0.01
     bounds_ok = b_r == b_rio
 
-    print("\n  Spatial alignment:")
-    print(
+    lines.append(
         f"    {'✅' if res_match else '❌'} "
         f"pixel size: rastera={res_r}  rasterio={res_rio}"
     )
-    print(
+    snap_reason = "  (due to snapping)" if snap_to_grid and not shift_ok else ""
+    lines.append(
         f"    {'✅' if shift_ok else '⚠️' if abs(px_shift_x) < 1 and abs(px_shift_y) < 1 else '❌'} "
         f"origin shift: dx={origin_dx:.6f}  dy={origin_dy:.6f}  "
-        f"({px_shift_x:.3f} px, {px_shift_y:.3f} px)"
+        f"({px_shift_x:.3f} px, {px_shift_y:.3f} px){snap_reason}"
     )
-    print(
-        f"    {'✅' if bounds_ok else '⚠️'} bounds match: {'yes' if bounds_ok else 'NO'}"
+    bounds_reason = "  (due to snapping)" if snap_to_grid and not bounds_ok else ""
+    lines.append(
+        f"    {'✅' if bounds_ok else '⚠️'} bounds match: {'yes' if bounds_ok else 'NO'}{bounds_reason}"
     )
+    return lines
 
 
-def main():
+def _assess_result(scenario: dict, accuracy: dict | None, consistency: dict | None, border_check: dict | None = None) -> tuple[bool, str]:
+    """Determine overall pass/fail against the scenario's ``expect`` spec.
+
+    Each scenario should declare an ``expect`` dict with:
+        shape_match:  bool   — shapes must be identical (default True)
+        dtype_match:  bool   — dtypes must be identical (default True)
+        max_pct_differ: float — max % pixels that differ (default 0)
+        max_rmse_pct:   float — max RMSE as % of data range (default 0)
+        note:         str    — explanation shown when expected differences occur
+    """
+    if "expect" not in scenario:
+        return False, "missing 'expect' in scenario definition"
+    expect = scenario["expect"]
+    expect_shape = expect.get("shape_match", True)
+    expect_dtype = expect.get("dtype_match", True)
+    max_pct = expect.get("max_pct_differ", 0)
+    max_rmse = expect.get("max_rmse_pct", 0)
+    note = expect.get("note", "")
+
+    problems = []
+
+    if consistency:
+        if expect_dtype and not consistency["dtype_ok"]:
+            problems.append("dtype mismatch")
+        if expect_shape and not consistency["shape_ok"]:
+            problems.append("shape mismatch")
+
+    if accuracy:
+        pct_diff = accuracy["pct_pixels_differ"]
+        rmse_pct = accuracy.get("rmse_pct_of_range", 0)
+        if pct_diff > max_pct:
+            problems.append(f"{pct_diff}% pixels differ (limit {max_pct}%)")
+        if rmse_pct > max_rmse:
+            problems.append(f"RMSE {rmse_pct}% of range (limit {max_rmse}%)")
+
+    if border_check and not border_check["ok"]:
+        bad_edges = [name for name, info in border_check["edges"].items() if info["bad"]]
+        problems.append(f"suspect border edges: {', '.join(bad_edges)}")
+
+    if not problems:
+        if note:
+            return True, f"As expected: {note}"
+        return True, "Results match."
+
+    return False, "; ".join(problems)
+
+
+def run_benchmarks(scenarios: list[dict]):
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--runs", type=int, default=1)
     parser.add_argument(
         "--cold-cache",
         action="store_true",
@@ -408,10 +341,12 @@ def main():
     )
     args = parser.parse_args()
 
-    export_dir = None if args.no_export else Path(__file__).parent / "data"
+    # Derive subdir from first scenario's mode (read / merge) + timestamp
+    mode = scenarios[0].get("mode", "read")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    export_dir = None if args.no_export else Path(__file__).parent / "data" / f"{mode}_{timestamp}"
     if export_dir:
         export_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Exporting arrays to {export_dir}\n")
 
     if args.cold_cache:
         # Verify sudo works without password
@@ -420,14 +355,16 @@ def main():
             print("ERROR: --cold-cache requires passwordless sudo for 'purge'.")
             print("Run: sudo -v   (then re-run this script)")
             sys.exit(1)
-        print("Cold-cache mode: purging OS page cache before each run\n")
 
-    for scenario_idx, scenario in enumerate(SCENARIOS, 1):
-        print(f"\n{'=' * 60}")
-        print(f"Scenario {scenario_idx}: {scenario['name']}")
-        print(f"{'=' * 60}")
+    report = []
 
-        # Slug for export filenames: "1_read_same_crs_native_resolution"
+    def out(line: str = ""):
+        """Print and capture a line for the markdown report."""
+        print(line)
+        report.append(line)
+
+    for scenario_idx, scenario in enumerate(scenarios, 1):
+        # Slug for export filenames
         slug = f"{scenario_idx}_{scenario['name'].lower()}"
         slug = slug.replace(":", "").replace(",", "")
         slug = slug.replace("(", "").replace(")", "")
@@ -436,7 +373,7 @@ def main():
         no_overviews = not scenario.get("use_overviews", False)
         snap_to_grid = scenario.get("snap_to_grid", True)
         timings = {"rastera": [], "rasterio": []}
-        memory = {"rastera": [], "rasterio": []}
+        mem = {"rastera": [], "rasterio": []}
 
         # First run: save arrays for accuracy comparison
         first_results = {}
@@ -449,6 +386,10 @@ def main():
                 f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
                 saved_paths[library] = f.name
                 f.close()
+
+        accuracy = None
+        consistency = None
+        spatial_lines = None
 
         try:
             for library in ["rastera", "rasterio"]:
@@ -464,38 +405,24 @@ def main():
                 if "error" not in result:
                     first_results[library] = result
                     timings[library].append(result["elapsed_s"])
-                    memory[library].append(result.get("peak_rss_mb", 0))
-                    print(
-                        f"  {library} run 1: {result['elapsed_s']:.3f}s  "
-                        f"mem={result.get('peak_rss_mb', '?')}MB  shape={result['shape']}"
-                    )
-                else:
-                    print(f"  {library} run 1: FAILED")
+                    mem[library].append(result.get("peak_rss_mb", 0))
 
-            # Result consistency check
+            # Result consistency
             if "rastera" in first_results and "rasterio" in first_results:
-                r, rio = first_results["rastera"], first_results["rasterio"]
-                mean_diff = abs(r["mean"] - rio["mean"])
-                dtype_ok = r["dtype"] == rio["dtype"]
-                shape_ok = r["shape"] == rio["shape"]
-                print("\n  Result consistency:")
-                print(
-                    f"    {'✅' if mean_diff < 5 else '⚠️' if mean_diff < 50 else '❌'} "
-                    f"mean:  rastera={r['mean']}  rasterio={rio['mean']}  "
-                    f"diff={mean_diff:.4f}"
-                )
-                print(
-                    f"    {'✅' if dtype_ok else '❌'} "
-                    f"dtype: rastera={r['dtype']}  rasterio={rio['dtype']}"
-                )
-                print(
-                    f"    {'✅' if shape_ok else '❌'} "
-                    f"shape: rastera={r['shape']}  rasterio={rio['shape']}"
-                )
-
-                # Spatial alignment check
-                if "transform" in r and "transform" in rio:
-                    print_spatial_alignment(r, rio)
+                ra, rio = first_results["rastera"], first_results["rasterio"]
+                consistency = {
+                    "mean_ra": ra["mean"],
+                    "mean_rio": rio["mean"],
+                    "mean_diff": abs(ra["mean"] - rio["mean"]),
+                    "dtype_ok": ra["dtype"] == rio["dtype"],
+                    "dtype_ra": ra["dtype"],
+                    "dtype_rio": rio["dtype"],
+                    "shape_ok": ra["shape"] == rio["shape"],
+                    "shape_ra": ra["shape"],
+                    "shape_rio": rio["shape"],
+                }
+                if "transform" in ra and "transform" in rio:
+                    spatial_lines = format_spatial_alignment(ra, rio, snap_to_grid=snap_to_grid)
 
             # Accuracy comparison
             try:
@@ -503,14 +430,20 @@ def main():
                     saved_paths["rastera"],
                     saved_paths["rasterio"],
                 )
-                print("\n  Accuracy comparison:")
-                print_accuracy(accuracy)
-            except Exception as e:
-                print(f"  Accuracy comparison failed: {e}")
+            except Exception:
+                pass
+
+            # Border sanity check (rastera output)
+            border_check = None
+            try:
+                border_check = check_borders(saved_paths["rastera"])
+            except Exception:
+                pass
 
             if export_dir:
-                for lib, path in saved_paths.items():
-                    print(f"  Saved: {path}")
+                export_paths = [saved_paths[lib] for lib in ["rastera", "rasterio"]]
+            else:
+                export_paths = None
         finally:
             if not export_dir:
                 for path in saved_paths.values():
@@ -520,7 +453,7 @@ def main():
                         pass
 
         # Remaining runs for timing
-        for run_idx in range(2, args.runs + 1):
+        for _ in range(2, args.runs + 1):
             for library in ["rastera", "rasterio"]:
                 result = run_once(
                     scenario,
@@ -531,41 +464,101 @@ def main():
                 )
                 if "error" not in result:
                     timings[library].append(result["elapsed_s"])
-                    memory[library].append(result.get("peak_rss_mb", 0))
-                    print(
-                        f"  {library} run {run_idx}: {result['elapsed_s']:.3f}s  "
-                        f"mem={result.get('peak_rss_mb', '?')}MB"
-                    )
-                else:
-                    print(f"  {library} run {run_idx}: FAILED")
+                    mem[library].append(result.get("peak_rss_mb", 0))
 
-        # Summary
-        print(f"\n  Summary ({args.runs} runs):")
+        # ── Print structured report ──────────────────────────────
+        out(f"\n{'=' * 60}")
+        out(f"Scenario {scenario_idx}: {scenario['name']}")
+        out(f"{'=' * 60}")
+
+        # Overall verdict
+        passed, reason = _assess_result(scenario, accuracy, consistency, border_check)
+        out(f"\n  Result: {'✅ AS EXPECTED' if passed else '❌ UNEXPECTED DIFFERENCE'}")
+        out(f"  Reason: {reason}")
+
+        # Consistency
+        if consistency:
+            c = consistency
+            out("\n  Result consistency:")
+            out(
+                f"    {'✅' if c['mean_diff'] < 5 else '⚠️' if c['mean_diff'] < 50 else '❌'} "
+                f"mean:  rastera={c['mean_ra']}  rasterio={c['mean_rio']}  "
+                f"diff={c['mean_diff']:.4f}"
+            )
+            out(
+                f"    {'✅' if c['dtype_ok'] else '❌'} "
+                f"dtype: rastera={c['dtype_ra']}  rasterio={c['dtype_rio']}"
+            )
+            out(
+                f"    {'✅' if c['shape_ok'] else '❌'} "
+                f"shape: rastera={c['shape_ra']}  rasterio={c['shape_rio']}"
+            )
+
+        # Spatial alignment
+        if spatial_lines:
+            out("\n  Spatial alignment:")
+            for line in spatial_lines:
+                out(line)
+
+        # Border sanity
+        if border_check:
+            if border_check["ok"]:
+                out("\n  Border sanity: ✅ no suspect edges")
+            else:
+                out("\n  Border sanity:")
+                for edge_name, info in border_check["edges"].items():
+                    if info["bad"]:
+                        out(
+                            f"    ❌ {edge_name}: {info['dominant_frac']*100:.0f}% "
+                            f"is value {info['dominant_value']}"
+                        )
+
+        # Accuracy
+        if accuracy:
+            out("\n  Accuracy:")
+            for line in format_accuracy(accuracy):
+                out(line)
+
+        # Speed summary
+        out(f"\n  Speed ({args.runs} run{'s' if args.runs > 1 else ''}):")
         for library in ["rastera", "rasterio"]:
             t = timings[library]
-            m = memory[library]
+            m = mem[library]
             if t:
                 med = median(t)
                 mem_med = median(m) if m else 0
-                print(
+                out(
                     f"    {library}: median={med:.3f}s  range=[{min(t):.3f}, {max(t):.3f}]  "
-                    f"mem={mem_med:.0f}MB (peak RSS)"
+                    f"mem={mem_med:.0f}MB"
                 )
             else:
-                print(f"    {library}: all runs failed")
-
+                out(f"    {library}: all runs failed")
         if timings["rastera"] and timings["rasterio"]:
             speedup = median(timings["rasterio"]) / median(timings["rastera"])
             icon = "🟢" if speedup > 1.5 else "🟡" if speedup > 1.0 else "🔴"
-            print(f"    {icon} rastera speedup: {speedup:.2f}x")
-        if memory["rastera"] and memory["rasterio"]:
+            out(f"    {icon} rastera speedup: {speedup:.2f}x")
+        if mem["rastera"] and mem["rasterio"]:
             mem_ratio = (
-                median(memory["rasterio"]) / median(memory["rastera"])
-                if median(memory["rastera"]) > 0
+                median(mem["rasterio"]) / median(mem["rastera"])
+                if median(mem["rastera"]) > 0
                 else 0
             )
-            print(f"    memory ratio (rasterio/rastera): {mem_ratio:.2f}x")
+            out(f"    memory ratio (rasterio/rastera): {mem_ratio:.2f}x")
+
+        # Export paths
+        if export_dir:
+            out("\n  Exported to:")
+            for path in export_paths:
+                out(f"    {path}")
+
+    if export_dir:
+        report_path = export_dir / "report.md"
+        with open(report_path, "w") as f:
+            f.write("```\n")
+            f.write("\n".join(report))
+            f.write("\n```\n")
+        out(f"\n{'─' * 60}")
+        out(f"All arrays exported to: {export_dir}")
+        out(f"Report written to:      {report_path}")
 
 
-if __name__ == "__main__":
-    main()

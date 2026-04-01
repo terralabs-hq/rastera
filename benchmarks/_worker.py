@@ -145,7 +145,11 @@ def merge_rasterio(uris: list[str], bbox: tuple, bbox_crs: int,
     datasets = [rasterio.open(u) for u in uris]
     vrts = []
     try:
-        if out_crs:
+        # Only use WarpedVRT when actual reprojection is needed.
+        # Wrapping same-CRS datasets in VRT adds an unnecessary GDAL warp
+        # layer that resamples through an intermediate grid.
+        needs_vrt = out_crs and any(ds.crs != out_crs for ds in datasets)
+        if needs_vrt:
             from rasterio.vrt import WarpedVRT
             from rasterio.warp import Resampling
             vrts = [WarpedVRT(ds, crs=out_crs, resampling=Resampling.nearest)

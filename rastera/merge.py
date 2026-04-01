@@ -7,7 +7,7 @@ from typing import Literal
 import numpy as np
 from affine import Affine
 from async_geotiff import Array
-from pyproj import CRS
+from pyproj import CRS, Transformer
 
 from .reader import AsyncGeoTIFF, _CrsNodata, _grid_for_bbox, _make_output_array
 from .geo import (
@@ -17,8 +17,41 @@ from .geo import (
     compute_paste_slices,
     ensure_bbox,
     normalize_band_indices,
+    resample_nearest,
     transform_bbox,
 )
+
+
+def _output_subgrid(
+    out_transform: Affine, out_w: int, out_h: int, sub_bbox: BBox
+) -> tuple[Affine, int, int] | None:
+    """Compute the portion of the output grid covering *sub_bbox*.
+
+    Returns ``(sub_transform, sub_width, sub_height)`` where
+    *sub_transform* is an integer-pixel-offset window of *out_transform*,
+    guaranteeing pixel-perfect alignment with the output grid.
+    Returns ``None`` if the sub-bbox doesn't overlap.
+    """
+    inv = ~out_transform
+    c0, r0 = _affine_apply(inv, sub_bbox.minx, sub_bbox.maxy)
+    c1, r1 = _affine_apply(inv, sub_bbox.maxx, sub_bbox.miny)
+
+    col_min = max(0, math.floor(min(c0, c1)))
+    row_min = max(0, math.floor(min(r0, r1)))
+    col_max = min(out_w, math.ceil(max(c0, c1)))
+    row_max = min(out_h, math.ceil(max(r0, r1)))
+
+    sub_w = col_max - col_min
+    sub_h = row_max - row_min
+    if sub_w <= 0 or sub_h <= 0:
+        return None
+
+    res = out_transform.a
+    sub_transform = Affine(
+        res, 0, out_transform.c + col_min * res,
+        0, -res, out_transform.f - row_min * res,
+    )
+    return sub_transform, sub_w, sub_h
 
 
 async def merge_cogs(
@@ -97,9 +130,10 @@ async def merge_cogs(
         or not all_same_res
         or not crs_matches_target
         or not res_matches_target
+        or not snap_to_grid
     )
 
-    if needs_reproject or not snap_to_grid:
+    if needs_reproject:
         return await _merge_reprojected(
             cogs,
             bbox=bbox,
@@ -113,19 +147,25 @@ async def merge_cogs(
             use_overviews=use_overviews,
         )
 
-    # --- Path A: native merge (snap_to_grid=True fast path) ---
-    # The output grid is snapped to the source COG's pixel grid so that
-    # pixels are copied 1:1 without resampling.
+    # --- Native merge fast path (no resampling needed) ---
+    # All COGs share the same CRS and resolution as the target.
+    # snap_to_grid=True: output grid snaps to source pixel grid (1:1 copy).
+    # snap_to_grid=False: output grid matches bbox exactly; paste rounds to
+    #   nearest pixel, avoiding the resample_nearest overhead.
     _require_compatible_merge_inputs(cogs)
 
     native_crs = base._crs_epsg
     native_bbox = transform_bbox(bbox, bbox_crs, native_crs)
 
-    # Get grid for bbox image mosaic
-    window_transform, win_width, win_height, out_bounds = _mosaic_grid_from_bbox(
-        base_transform=base_gt.transform,
-        bbox=native_bbox,
-    )
+    if snap_to_grid:
+        window_transform, win_width, win_height, _out_bounds = _mosaic_grid_from_bbox(
+            base_transform=base_gt.transform,
+            bbox=native_bbox,
+        )
+    else:
+        window_transform, win_width, win_height = _grid_for_bbox(
+            native_bbox, target_resolution,
+        )
 
     # Get sub bboxes specific to the contributing image
     sub_bboxes: list[tuple[AsyncGeoTIFF, BBox]] = []
@@ -193,14 +233,67 @@ async def _merge_reprojected(
     async def _read_and_reproject(
         cog: AsyncGeoTIFF, sb: BBox
     ) -> Array:
-        return await cog.read(
-            bbox=sb,
-            bbox_crs=out_crs,
-            target_crs=out_crs,
-            target_resolution=res,
-            band_indices=band_indices,
-            use_overviews=use_overviews,
+        # Compute an output-aligned sub-grid for this COG's contribution.
+        subgrid = _output_subgrid(out_transform, out_w, out_h, sb)
+        if subgrid is None:
+            return _make_output_array(
+                np.full((n_out_bands, 0, 0), 0, dtype=base_gt.dtype),
+                out_transform, 0, 0,
+                _CrsNodata(CRS.from_epsg(out_crs), cog._nodata),
+            )
+        sub_transform, sub_w, sub_h = subgrid
+
+        # Geographic extent of the aligned sub-grid (may be slightly
+        # larger than sb due to integer pixel rounding).
+        read_bbox = bounds_from_transform(sub_transform, sub_w, sub_h)
+
+        needs_reproject = cog._crs_epsg != out_crs
+        if needs_reproject:
+            read_bbox = transform_bbox(read_bbox, out_crs, cog._crs_epsg)
+
+        # Pad by one native pixel so the resampler has source data for
+        # every output pixel even when grids are offset by a fraction.
+        pad = float(cog._geotiff.res[0])
+        read_bbox = BBox(
+            read_bbox.minx - pad,
+            read_bbox.miny - pad,
+            read_bbox.maxx + pad,
+            read_bbox.maxy + pad,
         )
+
+        # Select best overview for the target resolution.
+        overview = None
+        if use_overviews:
+            src_res = res
+            if needs_reproject:
+                cog_bounds_target = transform_bbox(
+                    BBox(*cog._geotiff.bounds), cog._crs_epsg, out_crs
+                )
+                cog_bounds_native = BBox(*cog._geotiff.bounds)
+                src_res = res * (cog_bounds_native.width / cog_bounds_target.width)
+            overview = cog._best_overview_for_resolution(src_res)
+
+        indices = normalize_band_indices(band_indices, cog._geotiff.count)
+        native = await cog._read_native(
+            bbox=read_bbox, band_indices=indices, overview=overview,
+        )
+
+        transformer = None
+        if needs_reproject:
+            transformer = Transformer.from_crs(out_crs, cog._crs_epsg, always_xy=True)
+
+        out_data = resample_nearest(
+            native.data,
+            src_transform=native.transform,
+            dst_transform=sub_transform,
+            dst_width=sub_w,
+            dst_height=sub_h,
+            nodata=cog._nodata,
+            transformer=transformer,
+        )
+
+        geotiff_ref = _CrsNodata(CRS.from_epsg(out_crs), cog._nodata)
+        return _make_output_array(out_data, sub_transform, sub_w, sub_h, geotiff_ref)
 
     out_data = await _gather_and_paste(
         contributing=contributing,

@@ -279,25 +279,25 @@ class TestMergeReprojected:
         """Setting target_crs different from native CRS triggers the reprojected path."""
         cog = _make_cog(width=10, height=10, scale=1.0, bands=1, crs=32632)
 
-        read_arr = np.ones((1, 10, 10), dtype=np.uint16) * 42
-        read_result = _make_array(read_arr, Affine(1, 0, 0, 0, -1, 10))
-        cog.read = AsyncMock(return_value=read_result)
+        # Return native-CRS data; the merge code resamples into the target grid.
+        native_arr = np.ones((1, 10, 10), dtype=np.uint16) * 42
+        native_result = _make_array(native_arr, Affine(1, 0, 0, 0, -1, 10))
+        cog._read_native = AsyncMock(return_value=native_result)
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
             band_indices=[1], target_crs=4326, target_resolution=1.0,
         )
-        # cog.read should be called (reprojected path) instead of _read_native
-        cog.read.assert_called()
+        cog._read_native.assert_called()
 
     async def test_merge_with_target_resolution(self):
         """Setting target_resolution different from native triggers the reprojected path."""
         cog = _make_cog(width=10, height=10, scale=1.0, bands=1)
 
-        # The reprojected path calls cog.read() with target_resolution
-        read_arr = np.ones((1, 5, 5), dtype=np.uint16) * 7
-        read_result = _make_array(read_arr, Affine(2.0, 0, 0, 0, -2.0, 10))
-        cog.read = AsyncMock(return_value=read_result)
+        # Return native-resolution data; merge code resamples to target_resolution.
+        native_arr = np.ones((1, 10, 10), dtype=np.uint16) * 7
+        native_result = _make_array(native_arr, Affine(1.0, 0, 0, 0, -1.0, 10))
+        cog._read_native = AsyncMock(return_value=native_result)
 
         result = await merge_cogs(
             [cog], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,
@@ -305,7 +305,7 @@ class TestMergeReprojected:
         )
         # Output should use the requested resolution
         assert result.res[0] == pytest.approx(2.0)
-        cog.read.assert_called()
+        cog._read_native.assert_called()
 
     async def test_merge_method_first_reprojected(self):
         """method='first' in reprojected path keeps the first COG's pixels."""
@@ -314,11 +314,12 @@ class TestMergeReprojected:
         cog1 = _make_cog(width=10, height=10, scale=1.0, bands=1, crs=32632)
         cog2 = _make_cog(width=10, height=10, scale=1.0, bands=1, crs=32632)
 
-        arr1 = np.ones((1, 5, 5), dtype=np.uint16) * 1
-        arr2 = np.ones((1, 5, 5), dtype=np.uint16) * 2
-        out_transform = Affine(2.0, 0, 0, 0, -2.0, 10)
-        cog1.read = AsyncMock(return_value=_make_array(arr1, out_transform))
-        cog2.read = AsyncMock(return_value=_make_array(arr2, out_transform))
+        # Return native-resolution data; merge code resamples to target_resolution=2.0.
+        arr1 = np.ones((1, 10, 10), dtype=np.uint16) * 1
+        arr2 = np.ones((1, 10, 10), dtype=np.uint16) * 2
+        native_transform = Affine(1.0, 0, 0, 0, -1.0, 10)
+        cog1._read_native = AsyncMock(return_value=_make_array(arr1, native_transform))
+        cog2._read_native = AsyncMock(return_value=_make_array(arr2, native_transform))
 
         result = await merge_cogs(
             [cog1, cog2], bbox=BBox(0, 0, 10, 10), bbox_crs=32632,

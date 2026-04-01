@@ -71,10 +71,18 @@ class _CrsNodata:
     nodata: float | None
 
 
-def _grid_for_bbox(bbox: BBox, res: float) -> tuple[Affine, int, int]:
-    """Compute (transform, width, height) for a regular grid covering *bbox*."""
-    width = max(1, math.ceil(bbox.width / res))
-    height = max(1, math.ceil(bbox.height / res))
+def _grid_for_bbox(
+    bbox: BBox, res: float, *, use_ceil: bool = False
+) -> tuple[Affine, int, int]:
+    """Compute (transform, width, height) for a regular grid covering *bbox*.
+
+    Uses ``round()`` by default to match rasterio/GDAL merge behaviour.
+    When *use_ceil* is True, uses ``math.ceil()`` to match rasterio read
+    behaviour (always covers the full bbox).
+    """
+    fn = math.ceil if use_ceil else round
+    width = max(1, fn(bbox.width / res))
+    height = max(1, fn(bbox.height / res))
     transform = Affine(res, 0, bbox.minx, 0, -res, bbox.maxy)
     return transform, width, height
 
@@ -309,7 +317,7 @@ class AsyncGeoTIFF:
             overview=overview,
         )
         target_bbox = BBox(*native.bounds)
-        out_transform, out_w, out_h = _grid_for_bbox(target_bbox, target_resolution)
+        out_transform, out_w, out_h = _grid_for_bbox(target_bbox, target_resolution, use_ceil=True)
         out_data = resample_nearest(
             native.data,
             src_transform=native.transform,
@@ -376,7 +384,7 @@ class AsyncGeoTIFF:
         else:
             res = gt.res[0]
 
-        out_transform, out_w, out_h = _grid_for_bbox(target_bbox, res)
+        out_transform, out_w, out_h = _grid_for_bbox(target_bbox, res, use_ceil=True)
 
         # ceil() in _grid_for_bbox may extend the output grid beyond
         # target_bbox.  Expand the source read bbox to cover the full
@@ -425,6 +433,11 @@ class AsyncGeoTIFF:
         snap_to_grid: bool = True,
     ) -> Array:
         """Read at native resolution/CRS, optionally from an overview."""
+        # TODO: async_geotiff's Window has no stride/step support, so we
+        # always read at full tile resolution even when the output is much
+        # coarser. If async_geotiff adds stride support we could do
+        # decimated reads here to skip unnecessary pixels and reduce I/O.
+
         # Determine which readable to use (full-res GeoTIFF or an Overview)
         if overview is not None:
             readable = overview
