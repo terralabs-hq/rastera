@@ -5,6 +5,7 @@ from typing import Any, Literal, overload
 
 from async_geotiff import RasterArray, Window
 from async_tiff.store import S3Store  # type: ignore[import-untyped]
+from pyproj import CRS
 
 from .merge import merge_cogs
 from .reader import AsyncGeoTIFF, clear_cache, open_many, set_cache_size
@@ -89,12 +90,13 @@ async def merge(
     sources: Sequence[AsyncGeoTIFF],
     *,
     bbox: tuple[float, float, float, float],
-    bbox_crs: int,
+    bbox_crs: int | CRS,
     band_indices: Sequence[int] | None = None,
     fill_value: int | float = 0,
-    target_crs: int,
+    target_crs: int | CRS | None = None,
     target_resolution: float,
-    method: Literal["first", "last"] = "first",
+    mosaic_method: Literal["first", "last"] = "first",
+    crs_method: Literal["most_common", "first"] = "most_common",
     snap_to_grid: bool = True,
     use_overviews: bool = False,
 ) -> RasterArray:
@@ -110,7 +112,7 @@ async def merge(
     (e.g. adjacent UTM zones).
 
     Args:
-        method: Overlap strategy when multiple sources cover the same pixel.
+        mosaic_method: Overlap strategy when multiple sources cover the same pixel.
             ``"first"`` (default) keeps the first valid pixel, matching
             ``rasterio.merge`` behaviour. ``"last"`` lets later sources
             overwrite earlier ones.
@@ -137,7 +139,8 @@ async def merge(
         fill_value=fill_value,
         target_crs=target_crs,
         target_resolution=target_resolution,
-        method=method,
+        mosaic_method=mosaic_method,
+        crs_method=crs_method,
         snap_to_grid=snap_to_grid,
         use_overviews=use_overviews,
     )

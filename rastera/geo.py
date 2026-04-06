@@ -8,7 +8,7 @@ from typing import Any, cast
 import numpy as np
 from affine import Affine
 from async_geotiff import Window
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,3 +385,15 @@ def _affine_apply(t: Any, x: float, y: float) -> tuple[float, float]:
     """Apply an affine transform to a point, with correct typing."""
     rx, ry = t * (x, y)
     return float(rx), float(ry)
+
+
+def _normalize_crs(crs: int | CRS) -> int:
+    """Convert an EPSG integer or ``pyproj.CRS`` to an EPSG integer."""
+    if isinstance(crs, int):
+        return crs
+    epsg = crs.to_epsg()
+    if epsg is None:
+        raise ValueError(
+            f"CRS {crs.name!r} has no EPSG code; pass an integer EPSG code instead."
+        )
+    return epsg

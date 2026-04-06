@@ -12,6 +12,7 @@ from rastera.geo import BBox, bounds_from_transform
 from rastera.merge import (
     _mosaic_grid_from_bbox,
     _require_compatible_merge_inputs,
+    _resolve_target_crs,
     merge_cogs,
 )
 
@@ -238,10 +239,10 @@ class TestMergeCogs:
             band_indices=[1],
             target_crs=32632,
             target_resolution=1.0,
-            method="last",
+            mosaic_method="last",
             snap_to_grid=True,
         )
-        # The overlap region (cols 5-9) should have cog2's value (last writer wins with method="last")
+        # The overlap region (cols 5-9) should have cog2's value (last writer wins with mosaic_method="last")
         assert result.data.shape == (1, 10, 15)
         assert np.all(result.data[0, :, :5] == 1)  # cog1 only
         assert np.all(result.data[0, :, 10:] == 2)  # cog2 only
@@ -336,7 +337,7 @@ class TestMergeCogs:
             band_indices=[1],
             target_crs=32632,
             target_resolution=1.0,
-            method="last",
+            mosaic_method="last",
             snap_to_grid=True,
         )
         # top half: cog2 is NaN so cog1's value (5.0) preserved
@@ -371,10 +372,10 @@ class TestMergeCogs:
             band_indices=[1],
             target_crs=32632,
             target_resolution=1.0,
-            method="last",
+            mosaic_method="last",
             snap_to_grid=True,
         )
-        # nodata=None with method="last", so cog2's zeros overwrite cog1's 42s
+        # nodata=None with mosaic_method="last", so cog2's zeros overwrite cog1's 42s
         assert np.all(result.data == 0)
 
 
@@ -425,8 +426,8 @@ class TestMergeReprojected:
         cog._read_native.assert_called()
 
     async def test_merge_method_first_reprojected(self):
-        """method='first' in reprojected path keeps the first COG's pixels."""
-        # Two fully overlapping COGs, different values. method="first" should
+        """mosaic_method='first' in reprojected path keeps the first COG's pixels."""
+        # Two fully overlapping COGs, different values. mosaic_method="first" should
         # keep cog1's value everywhere.
         cog1 = _make_cog(width=10, height=10, scale=1.0, bands=1, crs=32632)
         cog2 = _make_cog(width=10, height=10, scale=1.0, bands=1, crs=32632)
@@ -445,7 +446,38 @@ class TestMergeReprojected:
             band_indices=[1],
             target_crs=32632,
             target_resolution=2.0,
-            method="first",
+            mosaic_method="first",
         )
-        # method="first": cog1's values should take precedence everywhere
+        # mosaic_method="first": cog1's values should take precedence everywhere
         assert np.all(result.data == 1)
+
+
+# ── _resolve_target_crs ────────────────────────────────────────────────
+
+
+class TestResolveTargetCrs:
+    def test_most_common_picks_majority(self):
+        cogs = [_make_cog(crs=32632), _make_cog(crs=32633), _make_cog(crs=32632)]
+        assert _resolve_target_crs(cogs, "most_common") == 32632
+
+    def test_first_picks_first(self):
+        cogs = [_make_cog(crs=32633), _make_cog(crs=32632), _make_cog(crs=32632)]
+        assert _resolve_target_crs(cogs, "first") == 32633
+
+    def test_first_skips_none_crs(self):
+        cogs = [_make_cog(crs=None), _make_cog(crs=32632)]
+        assert _resolve_target_crs(cogs, "first") == 32632
+
+    def test_most_common_skips_none_crs(self):
+        cogs = [_make_cog(crs=None), _make_cog(crs=32632)]
+        assert _resolve_target_crs(cogs, "most_common") == 32632
+
+    def test_all_none_raises(self):
+        cogs = [_make_cog(crs=None), _make_cog(crs=None)]
+        with pytest.raises(ValueError, match="No CRS found"):
+            _resolve_target_crs(cogs, "most_common")
+
+    def test_single_cog(self):
+        cogs = [_make_cog(crs=4326)]
+        assert _resolve_target_crs(cogs, "most_common") == 4326
+        assert _resolve_target_crs(cogs, "first") == 4326

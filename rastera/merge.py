@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal
 
@@ -12,6 +13,7 @@ from pyproj import CRS, Transformer
 from .geo import (
     BBox,
     _affine_apply,
+    _normalize_crs,
     bounds_from_transform,
     compute_paste_slices,
     ensure_bbox,
@@ -26,12 +28,13 @@ async def merge_cogs(
     cogs: Sequence[AsyncGeoTIFF],
     *,
     bbox: BBox | tuple[float, float, float, float],
-    bbox_crs: int,
+    bbox_crs: int | CRS,
     band_indices: Sequence[int] | None = None,
     fill_value: int | float = 0,
-    target_crs: int,
+    target_crs: int | CRS | None = None,
     target_resolution: float,
-    method: Literal["first", "last"] = "first",
+    mosaic_method: Literal["first", "last"] = "first",
+    crs_method: Literal["most_common", "first"] = "most_common",
     snap_to_grid: bool = True,
     use_overviews: bool = False,
 ) -> RasterArray:
@@ -41,17 +44,23 @@ async def merge_cogs(
     Args:
         cogs: Sequence of opened AsyncGeoTIFF instances
         bbox: Bounding box of the merged image
-        bbox_crs: EPSG code of the bbox coordinate system. The bbox
-            is transformed to the COGs' native CRS automatically.
+        bbox_crs: EPSG code or ``pyproj.CRS`` of the bbox coordinate
+            system. The bbox is transformed to the COGs' native CRS
+            automatically.
         band_indices: 1-based band indices to read
         fill_value: Value used for pixels in `bbox` that aren't covered by any
             input GeoTIFF (i.e. a "no data" fill; not always 0).
-        target_crs: Output EPSG code. Each COG is reprojected into
-            this CRS before merging when it differs from the source.
+        target_crs: Output EPSG code or ``pyproj.CRS``. Each COG is
+            reprojected into this CRS before merging when it differs
+            from the source. When ``None``, the CRS is inferred from
+            the inputs using *crs_method*.
         target_resolution: Output pixel size in target CRS units.
-        method: Overlap strategy when multiple COGs cover the same pixel.
+        mosaic_method: Overlap strategy when multiple COGs cover the same pixel.
             ``"first"`` keeps the first valid pixel (matching rasterio.merge
             default). ``"last"`` lets later COGs overwrite earlier ones.
+        crs_method: Strategy for choosing the output CRS when *target_crs*
+            is ``None``. ``"most_common"`` picks the CRS shared by the most
+            inputs; ``"first"`` uses the CRS of the first input.
         snap_to_grid: When True (default), the output grid snaps to the
             source pixel grid for exact 1:1 copies (no resampling); the
             bbox may shift by up to 1 pixel. When False, the output bbox
@@ -72,6 +81,13 @@ async def merge_cogs(
     """
     if not cogs:
         raise ValueError("merge requires at least one AsyncGeoTIFF")
+
+    bbox_crs = _normalize_crs(bbox_crs)
+    if target_crs is not None:
+        target_crs = _normalize_crs(target_crs)
+
+    if target_crs is None:
+        target_crs = _resolve_target_crs(cogs, crs_method)
 
     bbox = ensure_bbox(bbox)
     base = cogs[0]
@@ -112,7 +128,7 @@ async def merge_cogs(
             fill_value=fill_value,
             target_crs=target_crs,
             target_resolution=target_resolution,
-            method=method,
+            mosaic_method=mosaic_method,
             use_overviews=use_overviews,
         )
 
@@ -160,7 +176,7 @@ async def merge_cogs(
         nodata=base._nodata,
         fill_value=fill_value,
         read_fn=_read_native_bands,
-        method=method,
+        mosaic_method=mosaic_method,
     )
     return _make_output_array(
         out_data, window_transform, win_width, win_height, base_gt
@@ -177,7 +193,7 @@ async def _merge_reprojected(
     fill_value: int | float,
     target_crs: int,
     target_resolution: float,
-    method: Literal["first", "last"] = "first",
+    mosaic_method: Literal["first", "last"] = "first",
     use_overviews: bool = False,
 ) -> RasterArray:
     """Path B: merge with reprojection — supports mixed-CRS inputs."""
@@ -283,7 +299,7 @@ async def _merge_reprojected(
         nodata=base._nodata,
         fill_value=fill_value,
         read_fn=_read_and_reproject,
-        method=method,
+        mosaic_method=mosaic_method,
     )
 
     geotiff_ref = _CrsNodata(CRS.from_epsg(out_crs), base._nodata)
@@ -301,18 +317,18 @@ async def _gather_and_paste(
     nodata: int | float | None,
     fill_value: int | float,
     read_fn: Callable[[AsyncGeoTIFF, BBox], Awaitable[RasterArray]],
-    method: Literal["first", "last"] = "first",
+    mosaic_method: Literal["first", "last"] = "first",
 ) -> np.ndarray:
     """Read contributing COGs sequentially and paste into a single output array.
 
-    Results are pasted in input order. Overlap is resolved by ``method``:
+    Results are pasted in input order. Overlap is resolved by ``mosaic_method``:
     ``"first"`` keeps the first valid pixel, ``"last"`` lets later COGs
     overwrite earlier ones.
 
     TODO: consider reading all COGs concurrently via asyncio.gather and
     pasting in order afterwards.  No threading issues (single event loop),
     but higher peak memory since all tile data lives in memory at once.
-    The current sequential approach allows early exit for method="first"
+    The current sequential approach allows early exit for mosaic_method="first"
     when all pixels are filled.
     """
     out_array = np.full(
@@ -325,7 +341,7 @@ async def _gather_and_paste(
         return out_array
 
     filled = (
-        np.zeros((dst_height, dst_width), dtype=bool) if method == "first" else None
+        np.zeros((dst_height, dst_width), dtype=bool) if mosaic_method == "first" else None
     )
 
     for cog, sub_bbox in contributing:
@@ -351,7 +367,7 @@ async def _gather_and_paste(
         else:
             src_valid = None
 
-        if method == "first":
+        if mosaic_method == "first":
             assert filled is not None
             unfilled = ~filled[dst_rows, dst_cols]
             if src_valid is not None:
@@ -483,3 +499,20 @@ def _require_compatible_merge_inputs(cogs: Sequence[AsyncGeoTIFF]) -> None:
                 "All GeoTIFFs must be aligned to the same pixel grid "
                 "(origins differ by whole pixels)"
             )
+
+
+def _resolve_target_crs(
+    cogs: Sequence[AsyncGeoTIFF],
+    crs_method: Literal["most_common", "first"],
+) -> int:
+    """Pick a target CRS from the input COGs."""
+    if crs_method == "first":
+        for cog in cogs:
+            if cog._crs_epsg is not None:
+                return cog._crs_epsg
+    else:  # most_common
+        counts = Counter(cog._crs_epsg for cog in cogs if cog._crs_epsg is not None)
+        if counts:
+            return counts.most_common(1)[0][0]
+    msg = "No CRS found in any input GeoTIFF; pass target_crs explicitly."
+    raise ValueError(msg)

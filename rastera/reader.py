@@ -16,6 +16,7 @@ from pyproj import CRS, Transformer
 
 from .geo import (
     BBox,
+    _normalize_crs,
     ensure_bbox,
     normalize_band_indices,
     resample_nearest,
@@ -121,10 +122,10 @@ class AsyncGeoTIFF:
     async def read(
         self,
         bbox: BBox | tuple[float, float, float, float] | None = None,
-        bbox_crs: int | None = None,
+        bbox_crs: int | CRS | None = None,
         window: Window | None = None,
         band_indices: Sequence[int] | None = None,
-        target_crs: int | None = None,
+        target_crs: int | CRS | None = None,
         target_resolution: float | None = None,
         snap_to_grid: bool = True,
         use_overviews: bool = False,
@@ -134,13 +135,15 @@ class AsyncGeoTIFF:
         Args:
             bbox: (minx, miny, maxx, maxy). Must be in target_crs if set,
                 else dataset CRS.
-            bbox_crs: EPSG code of the bbox coordinate system. Must match
-                target_crs (or the dataset CRS when target_crs is not set).
+            bbox_crs: EPSG code or ``pyproj.CRS`` of the bbox coordinate
+                system. Must match target_crs (or the dataset CRS when
+                target_crs is not set).
             window: Pixel window (col_off, row_off, width, height). Can
                 combine with target_resolution for resampling but not with
                 target_crs.
             band_indices: 1-based band indices to read.
-            target_crs: Output EPSG code. When set, data is reprojected.
+            target_crs: Output EPSG code or ``pyproj.CRS``. When set,
+                data is reprojected.
             target_resolution: Output pixel size in target CRS units.
             snap_to_grid: When True (default), the output grid snaps to
                 the source pixel grid for exact 1:1 copies (no resampling);
@@ -168,6 +171,11 @@ class AsyncGeoTIFF:
             raise ValueError("bbox_crs is required when bbox is provided")
         if window is not None and target_crs is not None:
             raise ValueError("Cannot combine window with target_crs")
+
+        if bbox_crs is not None:
+            bbox_crs = _normalize_crs(bbox_crs)
+        if target_crs is not None:
+            target_crs = _normalize_crs(target_crs)
 
         needs_reproject = target_crs is not None and target_crs != self._crs_epsg
         needs_resample = target_resolution is not None and not math.isclose(

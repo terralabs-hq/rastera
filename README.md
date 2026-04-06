@@ -48,13 +48,14 @@ sources = await rastera.open(uris)  # concurrent opens, shared connection pool
 
 raster_array = await rastera.merge(
     sources,
-    bbox=bbox,
-    bbox_crs=32633,
-    band_indices=[1, 2, 3],
+    bbox=bbox_shared,
+    bbox_crs=utm_crs,
+    band_indices=[1],
     fill_value=0,
-    target_crs=32633,
-    target_resolution=20,
-    method="first",       # "first" or "last"
+    target_crs=utm_crs,
+    target_resolution=10,
+    mosaic_method="first",
+    crs_method="most_common",
     snap_to_grid=True,
     use_overviews=False,
 )
