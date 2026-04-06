@@ -15,12 +15,14 @@ from shapely.geometry import box
 
 from .reader import (
     AsyncGeoTIFF,
+    get_cached_geotiff,
+)
+from .store import (
     _apply_s3_defaults,
     _bucket_url,
     _extract_key,
     _obstore_key,
     _resolve_local_path,
-    get_cached_geotiff,
 )
 
 

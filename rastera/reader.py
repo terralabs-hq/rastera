@@ -2,20 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
-import re
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import numpy as np
 from affine import Affine
 from async_geotiff import GeoTIFF, RasterArray, Window
-from async_tiff.store import from_url  # type: ignore[import-untyped]
+from async_tiff.store import from_url
 from pyproj import CRS, Transformer
 
 from .geo import (
@@ -26,11 +22,13 @@ from .geo import (
     transform_bbox,
     window_from_bbox,
 )
-
-_DEFAULT_REGION = (
-    os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
+from .store import (
+    _apply_s3_defaults,
+    _bucket_url,
+    _build_store,
+    _extract_key,
+    _resolve_local_path,
 )
-_S3_REGION_RE = re.compile(r"[./]s3[.-]([a-z0-9-]+)\.amazonaws\.com")
 
 # LRU cache for parsed GeoTIFF objects, keyed by URI.
 # Avoids re-fetching headers on repeated opens of the same file.
@@ -49,11 +47,7 @@ class AsyncGeoTIFF:
         self.uri = uri
         self._geotiff = geotiff
         self._crs_epsg: int | None = geotiff.crs.to_epsg()
-        self._nodata: int | float | None = (
-            _coerce_nodata(geotiff.nodata, geotiff.dtype)
-            if geotiff.dtype is not None
-            else geotiff.nodata
-        )
+        self._nodata: int | float | None = _coerce_nodata(geotiff.nodata, geotiff.dtype)
 
         self.overviews: list[tuple[int, int]] = [
             (o.width, o.height) for o in geotiff.overviews
@@ -203,7 +197,6 @@ class AsyncGeoTIFF:
 
         # Window + resample (window + reproject is rejected above)
         if window is not None:
-            assert target_resolution is not None
             return await self._read_window_resampled(
                 window=window,
                 band_indices=band_indices,
@@ -268,7 +261,6 @@ class AsyncGeoTIFF:
         """Read with reprojection and/or resampling."""
         gt = self._geotiff
         src_crs = self._crs_epsg
-        assert src_crs is not None
         out_crs = target_crs or src_crs
 
         if bbox is not None:
@@ -294,7 +286,6 @@ class AsyncGeoTIFF:
         # using the bbox width ratio (e.g. 0.001° → ~83m).
         overview = None
         if needs_resample and use_overviews:
-            assert target_resolution is not None
             src_res = target_resolution
             if needs_reproject:
                 src_res = target_resolution * (src_bbox.width / target_bbox.width)
@@ -375,7 +366,6 @@ class AsyncGeoTIFF:
         if bbox is None and window is None:
             bbox = BBox(*readable.bounds)
         if window is None:
-            assert bbox is not None
             window = window_from_bbox(readable, bbox)
 
         # Use async-geotiff's built-in read (handles tile fetching + stitching)
@@ -460,7 +450,7 @@ def clear_cache() -> None:
 
 
 def set_cache_size(n: int) -> None:
-    """Set max number of cached GeoTIFF objects (LRU eviction). 0 disables."""
+    """Set max cached GeoTIFF objects (LRU eviction). 0 disables."""
     global _cache_max_size
     _cache_max_size = n
     while len(_geotiff_cache) > _cache_max_size:
@@ -523,105 +513,3 @@ def _coerce_nodata(nodata: float | None, dtype: np.dtype) -> int | float | None:
     if kind in ("i", "u"):
         return None if math.isnan(nodata) else int(nodata)
     return float(nodata)
-
-
-# ---- URI / store helpers ----
-
-
-def _is_s3_uri(uri: str) -> bool:
-    return uri.startswith("s3://") or ".s3." in uri or ".s3-" in uri
-
-
-def _detect_region(uri: str) -> str:
-    """Try to extract the AWS region from an S3 HTTPS URL, fall back to env/default.
-
-    Handles virtual-hosted style:
-        https://<bucket>.s3.<region>.amazonaws.com/...
-        https://<bucket>.s3-<region>.amazonaws.com/...
-    And path style:
-        https://s3.<region>.amazonaws.com/...
-    """
-    m = _S3_REGION_RE.search(uri)
-    if m:
-        return m.group(1)
-    return _DEFAULT_REGION
-
-
-def _extract_key(uri: str) -> str:
-    """Extract the object key from a URI, for use with a pre-constructed store."""
-    parsed = urlparse(uri)
-    if parsed.scheme == "s3":
-        return parsed.path.lstrip("/")
-    if parsed.scheme in {"http", "https"}:
-        host = parsed.netloc
-        if ".s3." in host or ".s3-" in host:
-            return parsed.path.lstrip("/")
-        # Path-style: https://s3.<region>.amazonaws.com/<bucket>/<key>
-        parts = parsed.path.lstrip("/").split("/", 1)
-        return parts[1] if len(parts) == 2 else ""
-    # Local path or other scheme — use path as-is
-    return parsed.path or uri
-
-
-def _apply_s3_defaults(store_kwargs: dict[str, Any], uri: str) -> None:
-    """Set default S3 credentials/region on *store_kwargs* when *uri* is an S3 URI."""
-    if _is_s3_uri(uri):
-        store_kwargs.setdefault("skip_signature", True)
-        store_kwargs.setdefault("region", _detect_region(uri))
-
-
-def _build_store(uri: str, **store_kwargs: Any) -> Any:
-    """Build an object store rooted at the bucket/host level."""
-    local_path = _resolve_local_path(uri)
-    if local_path is not None:
-        return from_url(local_path.parent.as_uri(), **store_kwargs)
-    _apply_s3_defaults(store_kwargs, uri)
-    # Root the store at the bucket, not the full object path
-    bucket_url = _bucket_url(uri)
-    return from_url(bucket_url, **store_kwargs)
-
-
-def _bucket_url(uri: str) -> str:
-    """Extract the bucket-level URL from a full object URI."""
-    parsed = urlparse(uri)
-    if parsed.scheme == "s3":
-        # s3://bucket/key -> s3://bucket
-        return f"s3://{parsed.netloc}"
-    if parsed.scheme in {"gs", "az"}:
-        return f"{parsed.scheme}://{parsed.netloc}"
-    if parsed.scheme in {"http", "https"}:
-        # https://bucket.s3.region.amazonaws.com/key -> https://bucket.s3.region.amazonaws.com
-        return f"{parsed.scheme}://{parsed.netloc}"
-    return uri
-
-
-def _resolve_local_path(uri: str):
-    """Return resolved Path if uri is local, else None."""
-    parsed = urlparse(uri)
-    if parsed.scheme not in ("", "file") or _is_s3_uri(uri):
-        return None
-    return Path(parsed.path if parsed.scheme == "file" else uri).resolve()
-
-
-def _obstore_key(uri: str) -> str:
-    """Extract the object key for use with an obstore rooted at bucket level.
-
-    Unlike ``_extract_key`` (used with async-tiff stores), this does not
-    distinguish virtual-hosted from path-style S3 HTTP URLs because
-    obstore handles that internally when the store is rooted via
-    ``_bucket_url``.
-    """
-    local_path = _resolve_local_path(uri)
-    if local_path is not None:
-        return local_path.name
-    parsed = urlparse(uri)
-    if parsed.scheme in ("s3", "gs", "az"):
-        return parsed.path.lstrip("/")
-    if parsed.scheme in ("http", "https"):
-        host = parsed.netloc
-        path = parsed.path.lstrip("/")
-        if ".s3." not in host and ".s3-" not in host:
-            parts = path.split("/", 1)
-            return parts[1] if len(parts) == 2 else ""
-        return path
-    return parsed.path or uri
