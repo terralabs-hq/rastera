@@ -82,7 +82,7 @@ async def build_index(
 
     results = await asyncio.gather(*(_open_one(u, hdr) for u, _, hdr in fetched))
 
-    rows: dict[str, list] = {
+    rows: dict[str, list[Any]] = {
         "uri": [],
         "header_bytes": [],
         "crs_epsg": [],
@@ -95,7 +95,7 @@ async def build_index(
         "nodata": [],
         "overviews": [],
     }
-    geometries = []
+    geometries: list[Any] = []
 
     for src, hdr in results:
         gt = src._geotiff
@@ -160,8 +160,8 @@ async def open_from_index(
     if len(gdf) == 0:
         return []
 
-    uris = gdf["uri"].tolist()
-    headers = gdf["header_bytes"].tolist()
+    uris: list[str] = gdf["uri"].tolist()  # type: ignore[reportUnknownMemberType]
+    headers: list[bytes] = gdf["header_bytes"].tolist()  # type: ignore[reportUnknownMemberType]
 
     if store is not None:
         shared_store = store
@@ -279,19 +279,24 @@ def _read_geoparquet(
     filtering, then loads ``header_bytes`` only for matched rows.
     """
     if bbox is None:
-        return gpd.read_parquet(path)
+        return gpd.read_parquet(path)  # type: ignore[reportUnknownMemberType]
 
-    meta_cols = [c for c in pq.read_schema(path).names if c != "header_bytes"]
-    gdf_meta = gpd.read_parquet(path, columns=meta_cols).reset_index(drop=True)
+    schema = pq.read_schema(path)  # type: ignore[reportUnknownMemberType]
+    all_names: list[str] = schema.names  # type: ignore[reportUnknownMemberType]
+    meta_cols = [c for c in all_names if c != "header_bytes"]
+    gdf_meta = gpd.read_parquet(  # type: ignore[reportUnknownMemberType]
+        path, columns=meta_cols
+    ).reset_index(drop=True)
 
     filtered = _filter_gdf(gpd.GeoDataFrame(gdf_meta), bbox, bbox_crs)
     if len(filtered) == 0:
         return filtered
 
-    row_indices = filtered.index.tolist()
-    header_col = pq.read_table(path, columns=["header_bytes"]).column("header_bytes")
+    row_indices: list[int] = filtered.index.tolist()  # type: ignore[reportUnknownMemberType]
+    tbl = pq.read_table(path, columns=["header_bytes"])  # type: ignore[reportUnknownMemberType]
+    header_col = tbl.column("header_bytes")  # type: ignore[reportUnknownMemberType]
     filtered = filtered.copy()
-    filtered["header_bytes"] = header_col.take(row_indices).to_pylist()
+    filtered["header_bytes"] = header_col.take(row_indices).to_pylist()  # type: ignore[reportUnknownMemberType]
 
     return filtered
 

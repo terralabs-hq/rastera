@@ -3,11 +3,12 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 from affine import Affine
 from async_geotiff import Window
+from async_geotiff._transform import HasTransform
 from pyproj import CRS, Transformer
 
 
@@ -90,7 +91,7 @@ def bounds_from_transform(transform: Affine, width: int, height: int) -> BBox:
 
 
 def window_from_bbox(
-    meta,
+    meta: HasTransform,
     bbox: BBox | tuple[float, float, float, float],
 ) -> Window:
     """Return pixel window for a world-space bbox."""
@@ -134,7 +135,7 @@ def window_from_bbox(
 
 def compute_paste_slices(
     *,
-    src,
+    src: HasTransform,
     dst_transform: Affine,
     dst_width: int,
     dst_height: int,
@@ -381,7 +382,7 @@ def _coarse_grid_transform(
     return src_col_f, src_row_f
 
 
-def _affine_apply(t: Any, x: float, y: float) -> tuple[float, float]:
+def _affine_apply(t: Affine, x: float, y: float) -> tuple[float, float]:
     """Apply an affine transform to a point, with correct typing."""
     rx, ry = t * (x, y)
     return float(rx), float(ry)

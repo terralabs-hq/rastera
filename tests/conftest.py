@@ -1,27 +1,30 @@
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
 from affine import Affine
 
 
-def make_meta(width=100, height=100, scale=10.0):
+def make_meta(
+    width: int = 100, height: int = 100, scale: float = 10.0
+) -> SimpleNamespace:
     """Duck-typed object with transform/width/height for window_from_bbox etc."""
     transform = Affine(scale, 0, 0, 0, -scale, height * scale)
     return SimpleNamespace(width=width, height=height, transform=transform)
 
 
 def make_mock_geotiff(
-    width=100,
-    height=100,
-    scale=10.0,
-    count=3,
-    tile_width=256,
-    tile_height=256,
-    dtype=np.dtype("u2"),
-    nodata=None,
-    crs_epsg=32632,
-):
+    width: int = 100,
+    height: int = 100,
+    scale: float = 10.0,
+    count: int = 3,
+    tile_width: int = 256,
+    tile_height: int = 256,
+    dtype: np.dtype[Any] = np.dtype("u2"),
+    nodata: float | None = None,
+    crs_epsg: int = 32632,
+) -> MagicMock:
     """Build a mock async_geotiff.GeoTIFF."""
     gt = MagicMock()
     gt.width = width

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from async_tiff.store import from_url
+from async_tiff.store import from_url  # type: ignore[reportMissingImports]
 
 _DEFAULT_REGION = "us-west-2"
 _S3_REGION_RE = re.compile(r"[./]s3[.-]([a-z0-9-]+)\.amazonaws\.com")
@@ -124,7 +124,7 @@ def _apply_boto3_credentials(
         store_kwargs.setdefault("skip_signature", True)
 
 
-def _build_store_with(uri: str, from_url_fn, **store_kwargs: Any) -> Any:
+def _build_store_with(uri: str, from_url_fn: Any, **store_kwargs: Any) -> Any:
     """Build an object store rooted at the bucket/host level.
 
     Accepts any ``from_url`` callable (e.g. ``async_tiff.store.from_url``

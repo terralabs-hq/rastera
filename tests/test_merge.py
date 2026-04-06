@@ -20,15 +20,15 @@ from rastera.merge import (
 
 
 def _make_geotiff_stub(
-    width=100,
-    height=100,
-    scale=10.0,
-    count=1,
-    origin_x=0.0,
-    origin_y=None,
-    crs_epsg=32632,
+    width: int = 100,
+    height: int = 100,
+    scale: float = 10.0,
+    count: int = 1,
+    origin_x: float = 0.0,
+    origin_y: float | None = None,
+    crs_epsg: int | None = 32632,
     dtype: np.dtype[Any] = np.dtype("u2"),
-    nodata=None,
+    nodata: float | None = None,
 ):
     """Build a MagicMock that quacks like async_geotiff.GeoTIFF."""
     if origin_y is None:
@@ -56,15 +56,15 @@ def _make_geotiff_stub(
 
 
 def _make_cog(
-    width=100,
-    height=100,
-    scale=10.0,
-    bands=1,
-    origin_x=0.0,
-    origin_y=None,
-    crs=32632,
+    width: int = 100,
+    height: int = 100,
+    scale: float = 10.0,
+    bands: int = 1,
+    origin_x: float = 0.0,
+    origin_y: float | None = None,
+    crs: int | None = 32632,
     dtype: np.dtype[Any] = np.dtype("u2"),
-    nodata=None,
+    nodata: float | None = None,
 ):
     """Build a mock AsyncGeoTIFF."""
     gt = _make_geotiff_stub(
@@ -87,7 +87,12 @@ def _make_cog(
     return cog
 
 
-def _make_array(data, transform, geotiff=None, nodata=None):
+def _make_array(
+    data: np.ndarray[Any, Any],
+    transform: Affine,
+    geotiff: Any = None,
+    nodata: float | None = None,
+):
     """Build a RasterArray for test returns."""
     if geotiff is None:
         geotiff = MagicMock()
@@ -182,7 +187,7 @@ class TestMergeCogs:
             target_resolution=1.0,
             snap_to_grid=True,
         )
-        assert result.data.shape[0] == 1  # 1 band
+        assert result.data.shape[0] == 1  # type: ignore[reportUnknownMemberType]  # 1 band
         cog._read_native.assert_called_once()
 
     async def test_no_cogs_raises(self):
@@ -208,7 +213,7 @@ class TestMergeCogs:
             target_crs=32632,
             target_resolution=1.0,
         )
-        assert np.all(result.data == 9999)
+        assert np.all(result.data == 9999)  # type: ignore[reportUnknownMemberType]
 
     async def test_two_cogs_overlap(self):
         """Two overlapping COGs: second one wins in overlap region."""
@@ -243,10 +248,10 @@ class TestMergeCogs:
             snap_to_grid=True,
         )
         # The overlap region (cols 5-9) should have cog2's value (last writer wins with mosaic_method="last")
-        assert result.data.shape == (1, 10, 15)
-        assert np.all(result.data[0, :, :5] == 1)  # cog1 only
-        assert np.all(result.data[0, :, 10:] == 2)  # cog2 only
-        assert np.all(result.data[0, :, 5:10] == 2)  # overlap -> cog2 wins
+        assert result.data.shape == (1, 10, 15)  # type: ignore[reportUnknownMemberType]
+        assert np.all(result.data[0, :, :5] == 1)  # type: ignore[reportUnknownMemberType]  # cog1 only
+        assert np.all(result.data[0, :, 10:] == 2)  # type: ignore[reportUnknownMemberType]  # cog2 only
+        assert np.all(result.data[0, :, 5:10] == 2)  # type: ignore[reportUnknownMemberType]  # overlap -> cog2 wins
 
     async def test_nodata_skipped_in_overlap(self):
         """Nodata pixels in a later COG should not overwrite valid data from earlier COGs."""
@@ -284,13 +289,13 @@ class TestMergeCogs:
             target_resolution=1.0,
             snap_to_grid=True,
         )
-        assert result.data.shape == (1, 10, 15)
+        assert result.data.shape == (1, 10, 15)  # type: ignore[reportUnknownMemberType]
         # cog1-only region: value 42
-        assert np.all(result.data[0, :, :5] == 42)
+        assert np.all(result.data[0, :, :5] == 42)  # type: ignore[reportUnknownMemberType]
         # overlap where cog2 has nodata: cog1's value (42) preserved
-        assert np.all(result.data[0, :, 5:10] == 42)
+        assert np.all(result.data[0, :, 5:10] == 42)  # type: ignore[reportUnknownMemberType]
         # cog2-only valid region: value 99
-        assert np.all(result.data[0, :, 10:] == 99)
+        assert np.all(result.data[0, :, 10:] == 99)  # type: ignore[reportUnknownMemberType]
 
     async def test_nan_nodata_skipped(self):
         """NaN nodata pixels should be transparent during merge."""
@@ -341,9 +346,9 @@ class TestMergeCogs:
             snap_to_grid=True,
         )
         # top half: cog2 is NaN so cog1's value (5.0) preserved
-        assert np.all(result.data[0, :5, :] == 5.0)
+        assert np.all(result.data[0, :5, :] == 5.0)  # type: ignore[reportUnknownMemberType]
         # bottom half: cog2 has valid data (77.0) which overwrites
-        assert np.all(result.data[0, 5:, :] == 77.0)
+        assert np.all(result.data[0, 5:, :] == 77.0)  # type: ignore[reportUnknownMemberType]
 
     async def test_nodata_none_still_overwrites(self):
         """When nodata is None, later COGs overwrite earlier ones with method='last'."""
@@ -376,7 +381,7 @@ class TestMergeCogs:
             snap_to_grid=True,
         )
         # nodata=None with mosaic_method="last", so cog2's zeros overwrite cog1's 42s
-        assert np.all(result.data == 0)
+        assert np.all(result.data == 0)  # type: ignore[reportUnknownMemberType]
 
 
 # ── merge: reprojected path ────────────────────────────────────────
@@ -422,7 +427,7 @@ class TestMergeReprojected:
             target_resolution=2.0,
         )
         # Output should use the requested resolution
-        assert result.res[0] == pytest.approx(2.0)
+        assert result.res[0] == pytest.approx(2.0)  # type: ignore[reportUnknownMemberType]
         cog._read_native.assert_called()
 
     async def test_merge_method_first_reprojected(self):
@@ -449,7 +454,7 @@ class TestMergeReprojected:
             mosaic_method="first",
         )
         # mosaic_method="first": cog1's values should take precedence everywhere
-        assert np.all(result.data == 1)
+        assert np.all(result.data == 1)  # type: ignore[reportUnknownMemberType]
 
 
 # ── _resolve_target_crs ────────────────────────────────────────────────

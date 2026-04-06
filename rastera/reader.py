@@ -11,7 +11,7 @@ from typing import Any, overload
 import numpy as np
 from affine import Affine
 from async_geotiff import GeoTIFF, RasterArray, Window
-from async_tiff.store import from_url
+from async_tiff.store import from_url  # type: ignore[reportMissingImports]
 from pyproj import CRS, Transformer
 
 from .geo import (
@@ -205,6 +205,7 @@ class AsyncGeoTIFF:
 
         # Window + resample (window + reproject is rejected above)
         if window is not None:
+            assert target_resolution is not None
             return await self._read_window_resampled(
                 window=window,
                 band_indices=band_indices,
@@ -246,7 +247,7 @@ class AsyncGeoTIFF:
             target_bbox, target_resolution, use_ceil=True
         )
         out_data = resample_nearest(
-            native.data,
+            native.data,  # type: ignore[reportUnknownMemberType]
             src_transform=native.transform,
             dst_transform=out_transform,
             dst_width=out_w,
@@ -270,6 +271,7 @@ class AsyncGeoTIFF:
         gt = self._geotiff
         src_crs = self._crs_epsg
         out_crs = target_crs or src_crs
+        assert out_crs is not None
 
         if bbox is not None:
             target_bbox = bbox
@@ -279,22 +281,24 @@ class AsyncGeoTIFF:
                     f"Please provide bbox in the target CRS."
                 )
         elif needs_reproject:
+            assert src_crs is not None
             target_bbox = transform_bbox(BBox(*gt.bounds), src_crs, out_crs)
         else:
             target_bbox = BBox(*gt.bounds)
 
-        src_bbox = (
-            transform_bbox(target_bbox, out_crs, src_crs)
-            if needs_reproject
-            else target_bbox
-        )
+        if needs_reproject:
+            assert src_crs is not None
+            src_bbox = transform_bbox(target_bbox, out_crs, src_crs)
+        else:
+            src_bbox = target_bbox
 
         # Pick the best overview for the target resolution.
         # For cross-CRS reads, convert target resolution to source CRS units
         # using the bbox width ratio (e.g. 0.001° → ~83m).
         overview = None
         if needs_resample and use_overviews:
-            src_res = target_resolution
+            assert target_resolution is not None
+            src_res: float = target_resolution
             if needs_reproject:
                 src_res = target_resolution * (src_bbox.width / target_bbox.width)
             overview = self._best_overview_for_resolution(src_res)
@@ -324,6 +328,7 @@ class AsyncGeoTIFF:
             target_bbox.maxy,
         )
         if needs_reproject:
+            assert src_crs is not None
             read_bbox = transform_bbox(read_bbox, out_crs, src_crs)
 
         native = await self._read_native(
@@ -337,7 +342,7 @@ class AsyncGeoTIFF:
             transformer = Transformer.from_crs(out_crs, src_crs, always_xy=True)
 
         out_data = resample_nearest(
-            native.data,
+            native.data,  # type: ignore[reportUnknownMemberType]
             src_transform=native.transform,
             dst_transform=out_transform,
             dst_width=out_w,
@@ -346,7 +351,7 @@ class AsyncGeoTIFF:
             transformer=transformer,
         )
 
-        geotiff_ref = (
+        geotiff_ref: GeoTIFF | _CrsNodata = (
             _CrsNodata(CRS.from_epsg(out_crs), self._nodata) if needs_reproject else gt
         )
         return _make_output_array(out_data, out_transform, out_w, out_h, geotiff_ref)
@@ -374,6 +379,7 @@ class AsyncGeoTIFF:
         if bbox is None and window is None:
             bbox = BBox(*readable.bounds)
         if window is None:
+            assert bbox is not None
             window = window_from_bbox(readable, bbox)
 
         # Use async-geotiff's built-in read (handles tile fetching + stitching)
@@ -382,7 +388,9 @@ class AsyncGeoTIFF:
         # Select requested bands
         if band_indices is not None:
             result = dc_replace(
-                result, data=result.data[band_indices], count=len(band_indices)
+                result,
+                data=result.data[band_indices],  # type: ignore[reportUnknownMemberType]
+                count=len(band_indices),
             )
 
         # When reading by bbox, override the transform origin to match the
@@ -446,7 +454,7 @@ async def open(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
-    **store_kwargs,
+    **store_kwargs: Any,
 ) -> AsyncGeoTIFF: ...
 
 
@@ -457,7 +465,7 @@ async def open(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
-    **store_kwargs,
+    **store_kwargs: Any,
 ) -> list[AsyncGeoTIFF]: ...
 
 
@@ -467,7 +475,7 @@ async def open(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
-    **store_kwargs,
+    **store_kwargs: Any,
 ) -> AsyncGeoTIFF | list[AsyncGeoTIFF]:
     """Open one or more GeoTIFFs from any supported URI.
 
@@ -550,8 +558,8 @@ def _make_output_array(
     transform: Affine,
     width: int,
     height: int,
-    geotiff,
-    mask: np.ndarray | None = None,
+    geotiff: GeoTIFF | _CrsNodata,
+    mask: np.ndarray[Any, Any] | None = None,
 ) -> RasterArray:
     """Construct a RasterArray for rastera output."""
     return RasterArray(
@@ -562,13 +570,15 @@ def _make_output_array(
         count=data.shape[0],
         transform=transform,
         _alpha_band_idx=None,
-        _geotiff=geotiff,
+        _geotiff=geotiff,  # type: ignore[reportArgumentType]
     )
 
 
-def _coerce_nodata(nodata: float | None, dtype: np.dtype) -> int | float | None:
+def _coerce_nodata(
+    nodata: float | None, dtype: np.dtype[Any] | None
+) -> int | float | None:
     """Coerce nodata from async-geotiff (always float) to match the raster dtype."""
-    if nodata is None:
+    if nodata is None or dtype is None:
         return None
     kind = np.dtype(dtype).kind
     if kind in ("i", "u"):

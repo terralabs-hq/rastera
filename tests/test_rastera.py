@@ -1,5 +1,6 @@
 """Unit tests for AsyncGeoTIFF."""
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -19,7 +20,13 @@ from tests.conftest import make_mock_geotiff
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
-def _make_read_result(shape, dtype=np.uint16, fill=1, transform=None, geotiff=None):
+def _make_read_result(
+    shape: tuple[int, int, int],
+    dtype: Any = np.uint16,
+    fill: int = 1,
+    transform: Affine | None = None,
+    geotiff: Any = None,
+) -> RasterArray:
     """Create a mock async-geotiff RasterArray result."""
     data = np.full(shape, fill, dtype=dtype)
     if transform is None:
@@ -82,7 +89,7 @@ class TestOpen:
     @pytest.mark.asyncio
     @patch("rastera.reader.GeoTIFF")
     @patch("rastera.reader.from_url")
-    async def test_open_auto_store(self, mock_from_url, mock_geotiff_cls):
+    async def test_open_auto_store(self, mock_from_url: Any, mock_geotiff_cls: Any):
         """Without an explicit store, from_url builds one from the URI."""
         gt = make_mock_geotiff()
         mock_store = MagicMock()
@@ -91,7 +98,7 @@ class TestOpen:
 
         obj = await AsyncGeoTIFF.open("s3://bucket/key.tif", skip_signature=True)
 
-        mock_from_url.assert_called_once_with(
+        mock_from_url.assert_called_once_with(  # type: ignore[reportUnknownMemberType]
             "s3://bucket/key.tif", skip_signature=True, region="us-west-2"
         )
         mock_geotiff_cls.open.assert_awaited_once_with(
@@ -102,7 +109,7 @@ class TestOpen:
 
     @pytest.mark.asyncio
     @patch("rastera.reader.GeoTIFF")
-    async def test_open_with_store(self, mock_geotiff_cls):
+    async def test_open_with_store(self, mock_geotiff_cls: Any):
         """With an explicit store, from_url is NOT called; key is extracted from URI."""
         gt = make_mock_geotiff()
         mock_geotiff_cls.open = AsyncMock(return_value=gt)
@@ -156,11 +163,11 @@ class TestRead:
         gt.read = AsyncMock(return_value=result)
 
         raster_array = await obj.read()
-        assert raster_array.data.shape == (1, 16, 16)
-        assert raster_array.data.dtype == np.uint16
+        assert raster_array.data.shape == (1, 16, 16)  # type: ignore[reportUnknownMemberType]
+        assert raster_array.data.dtype == np.uint16  # type: ignore[reportUnknownMemberType]
         assert raster_array.width == 16
         assert raster_array.height == 16
-        np.testing.assert_array_equal(raster_array.data, 1)
+        np.testing.assert_array_equal(raster_array.data, 1)  # type: ignore[reportUnknownMemberType]
 
     @pytest.mark.asyncio
     async def test_read_with_window(self):
@@ -174,8 +181,8 @@ class TestRead:
 
         window = Window(col_off=4, row_off=4, width=16, height=16)
         raster_array = await obj.read(window=window)
-        assert raster_array.data.shape == (2, 16, 16)
-        np.testing.assert_array_equal(raster_array.data, 42)
+        assert raster_array.data.shape == (2, 16, 16)  # type: ignore[reportUnknownMemberType]
+        np.testing.assert_array_equal(raster_array.data, 42)  # type: ignore[reportUnknownMemberType]
 
     @pytest.mark.asyncio
     async def test_read_band_indices(self):

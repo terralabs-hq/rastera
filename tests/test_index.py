@@ -1,5 +1,6 @@
 """Unit tests for build_index, open_from_index, and HeaderCacheStore."""
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import geopandas as gpd
@@ -15,15 +16,15 @@ from rastera.reader import AsyncGeoTIFF
 
 
 def _make_mock_async_geotiff(
-    uri="s3://bucket/key.tif",
-    crs_epsg=32632,
-    width=100,
-    height=100,
-    scale=10.0,
-    count=3,
-    dtype=np.dtype("u2"),
-    nodata=None,
-):
+    uri: str = "s3://bucket/key.tif",
+    crs_epsg: int = 32632,
+    width: int = 100,
+    height: int = 100,
+    scale: float = 10.0,
+    count: int = 3,
+    dtype: np.dtype[Any] = np.dtype("u2"),
+    nodata: float | None = None,
+) -> MagicMock:
     """Build a mock AsyncGeoTIFF with _geotiff, _crs_epsg, _nodata."""
     transform = Affine(scale, 0, 0, 0, -scale, height * scale)
     bounds = (0, 0, width * scale, height * scale)
@@ -53,13 +54,13 @@ def _make_mock_async_geotiff(
     return obj
 
 
-def _make_index_gdf(entries):
+def _make_index_gdf(entries: list[dict[str, Any]]) -> gpd.GeoDataFrame:
     """Build a GeoDataFrame matching the build_index schema.
 
     Each entry is a dict with keys: uri, crs_epsg, minx, miny, maxx, maxy.
     Missing keys get sensible defaults.
     """
-    rows = {
+    rows: dict[str, list[Any]] = {
         "uri": [],
         "header_bytes": [],
         "crs_epsg": [],
@@ -72,7 +73,7 @@ def _make_index_gdf(entries):
         "nodata": [],
         "overviews": [],
     }
-    geometries = []
+    geometries: list[Any] = []
     for e in entries:
         rows["uri"].append(e["uri"])
         rows["header_bytes"].append(e.get("header_bytes", b"\x00" * 100))
@@ -95,7 +96,7 @@ def _make_index_gdf(entries):
 class TestHeaderCacheStore:
     @pytest.mark.asyncio
     @patch("rastera.index.obstore.get_range_async", new_callable=AsyncMock)
-    async def test_get_range_served_from_cache(self, mock_get_range):
+    async def test_get_range_served_from_cache(self, mock_get_range: Any) -> None:
         cached_bytes = b"ABCDEFGHIJ"  # 10 bytes
         store = HeaderCacheStore(MagicMock(), {"file.tif": cached_bytes})
 
@@ -106,7 +107,7 @@ class TestHeaderCacheStore:
 
     @pytest.mark.asyncio
     @patch("rastera.index.obstore.get_range_async", new_callable=AsyncMock)
-    async def test_get_range_delegates_beyond_cache(self, mock_get_range):
+    async def test_get_range_delegates_beyond_cache(self, mock_get_range: Any) -> None:
         cached_bytes = b"ABCDE"  # 5 bytes
         inner = MagicMock()
         store = HeaderCacheStore(inner, {"file.tif": cached_bytes})
@@ -125,7 +126,7 @@ class TestHeaderCacheStore:
 
     @pytest.mark.asyncio
     @patch("rastera.index.obstore.get_ranges_async", new_callable=AsyncMock)
-    async def test_get_ranges_mixed(self, mock_get_ranges):
+    async def test_get_ranges_mixed(self, mock_get_ranges: Any) -> None:
         cached_bytes = b"0123456789"  # 10 bytes
         inner = MagicMock()
         store = HeaderCacheStore(inner, {"file.tif": cached_bytes})
@@ -155,7 +156,9 @@ class TestBuildIndex:
     @patch("rastera.index._build_obstore")
     @patch("rastera.index.AsyncGeoTIFF.open", new_callable=AsyncMock)
     @patch("rastera.index.obstore.get_range_async", new_callable=AsyncMock)
-    async def test_single_uri(self, mock_get_range, mock_open, mock_build_obs):
+    async def test_single_uri(
+        self, mock_get_range: Any, mock_open: Any, mock_build_obs: Any
+    ) -> None:
         mock_build_obs.return_value = MagicMock()
         mock_get_range.return_value = b"\x00" * 32768
         mock_cog = _make_mock_async_geotiff(
@@ -171,7 +174,8 @@ class TestBuildIndex:
         gdf = await build_index(["s3://bucket/key.tif"])
 
         assert len(gdf) == 1
-        assert gdf.crs is not None and gdf.crs.to_epsg() == 4326
+        assert gdf.crs is not None
+        assert gdf.crs.to_epsg() == 4326
         row = gdf.iloc[0]
         assert row["uri"] == "s3://bucket/key.tif"
         assert row["crs_epsg"] == 32632
@@ -201,8 +205,11 @@ class TestBuildIndex:
     @patch("rastera.index.AsyncGeoTIFF.open", new_callable=AsyncMock)
     @patch("rastera.index.obstore.get_range_async", new_callable=AsyncMock)
     async def test_reprojects_bounds_to_4326(
-        self, mock_get_range, mock_open, mock_build_obs
-    ):
+        self,
+        mock_get_range: Any,
+        mock_open: Any,
+        mock_build_obs: Any,
+    ) -> None:
         """A UTM COG's geometry in the index should be in EPSG:4326, not UTM."""
         mock_build_obs.return_value = MagicMock()
         mock_get_range.return_value = b"\x00" * 100
@@ -218,7 +225,7 @@ class TestBuildIndex:
         gdf = await build_index(["s3://bucket/utm.tif"])
 
         geom = gdf.geometry.iloc[0]
-        minx, miny, maxx, maxy = geom.bounds
+        minx, miny, maxx, maxy = geom.bounds  # type: ignore[reportUnknownMemberType]
         # UTM bounds (0,0)-(1000,1000) → WGS84 should be small lon/lat values
         assert -180 <= minx <= 180
         assert -90 <= miny <= 90
@@ -226,11 +233,12 @@ class TestBuildIndex:
         assert maxy > miny
 
     @pytest.mark.asyncio
-    async def test_empty_uris(self):
+    async def test_empty_uris(self) -> None:
         gdf = await build_index([])
 
         assert len(gdf) == 0
-        assert gdf.crs is not None and gdf.crs.to_epsg() == 4326
+        assert gdf.crs is not None
+        assert gdf.crs.to_epsg() == 4326
         assert "uri" in gdf.columns
         assert "header_bytes" in gdf.columns
 
@@ -243,7 +251,9 @@ class TestOpenFromIndex:
     @patch("rastera.index._build_obstore")
     @patch("rastera.index.AsyncGeoTIFF.open", new_callable=AsyncMock)
     @patch("rastera.index.get_cached_geotiff", return_value=None)
-    async def test_returns_cogs(self, mock_cache, mock_open, mock_build_obs):
+    async def test_returns_cogs(
+        self, mock_cache: Any, mock_open: Any, mock_build_obs: Any
+    ) -> None:
         mock_build_obs.return_value = MagicMock()
         mock_open.return_value = MagicMock(spec=AsyncGeoTIFF)
 
@@ -263,7 +273,9 @@ class TestOpenFromIndex:
     @patch("rastera.index._build_obstore")
     @patch("rastera.index.AsyncGeoTIFF.open", new_callable=AsyncMock)
     @patch("rastera.index.get_cached_geotiff", return_value=None)
-    async def test_bbox_filter(self, mock_cache, mock_open, mock_build_obs):
+    async def test_bbox_filter(
+        self, mock_cache: Any, mock_open: Any, mock_build_obs: Any
+    ) -> None:
         mock_build_obs.return_value = MagicMock()
         mock_open.return_value = MagicMock(spec=AsyncGeoTIFF)
 
@@ -281,7 +293,7 @@ class TestOpenFromIndex:
         mock_open.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_empty_after_filter(self):
+    async def test_empty_after_filter(self) -> None:
         gdf = _make_index_gdf(
             [
                 {"uri": "s3://b/a.tif", "minx": 10, "miny": 10, "maxx": 11, "maxy": 11},

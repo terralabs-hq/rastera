@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from affine import Affine
@@ -276,7 +276,7 @@ async def _merge_reprojected(
             transformer = Transformer.from_crs(out_crs, cog._crs_epsg, always_xy=True)
 
         out_data = resample_nearest(
-            native.data,
+            native.data,  # type: ignore[reportUnknownMemberType]
             src_transform=native.transform,
             dst_transform=sub_transform,
             dst_width=sub_w,
@@ -313,7 +313,7 @@ async def _gather_and_paste(
     dst_width: int,
     dst_height: int,
     n_bands: int,
-    dtype: np.dtype,
+    dtype: np.dtype[Any] | None,
     nodata: int | float | None,
     fill_value: int | float,
     read_fn: Callable[[AsyncGeoTIFF, BBox], Awaitable[RasterArray]],
@@ -356,7 +356,7 @@ async def _gather_and_paste(
         if slices is None:
             continue
         dst_rows, dst_cols, src_rows, src_cols = slices
-        src_data = arr.data[:, src_rows, src_cols]
+        src_data: np.ndarray[Any, Any] = arr.data[:, src_rows, src_cols]  # type: ignore[reportUnknownMemberType]
 
         if nodata is not None:
             if isinstance(nodata, float) and math.isnan(nodata):
