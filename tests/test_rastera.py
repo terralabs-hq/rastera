@@ -98,7 +98,7 @@ class TestOpen:
 
         obj = await AsyncGeoTIFF.open("s3://bucket/key.tif", skip_signature=True)
 
-        mock_from_url.assert_called_once_with(  # type: ignore[reportUnknownMemberType]
+        mock_from_url.assert_called_once_with(
             "s3://bucket/key.tif", skip_signature=True, region="us-west-2"
         )
         mock_geotiff_cls.open.assert_awaited_once_with(
@@ -205,10 +205,10 @@ class TestRead:
         gt.read = AsyncMock(return_value=result)
 
         raster_array = await obj.read(band_indices=[1, 3])
-        assert raster_array.data.shape == (2, 16, 16)
+        assert raster_array.data.shape == (2, 16, 16)  # type: ignore[reportUnknownMemberType]
         # band_indices [1, 3] → 0-based [0, 2]
-        np.testing.assert_array_equal(raster_array.data[0], data[0])
-        np.testing.assert_array_equal(raster_array.data[1], data[2])
+        np.testing.assert_array_equal(raster_array.data[0], data[0])  # type: ignore[reportUnknownMemberType]
+        np.testing.assert_array_equal(raster_array.data[1], data[2])  # type: ignore[reportUnknownMemberType]
 
     @pytest.mark.asyncio
     async def test_read_band_index_zero_raises(self):

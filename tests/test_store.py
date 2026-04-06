@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from rastera.store import (
@@ -124,33 +125,33 @@ class TestExtractKey:
 
 class TestApplyS3Defaults:
     def test_non_s3_uri_is_noop(self):
-        kwargs: dict = {}
+        kwargs: dict[str, Any] = {}
         _apply_s3_defaults(kwargs, "https://example.com/file.tif")
         assert kwargs == {}
 
     def test_s3_uri_sets_skip_signature(self):
-        kwargs: dict = {}
+        kwargs: dict[str, Any] = {}
         _apply_s3_defaults(kwargs, "s3://bucket/key")
         assert kwargs["skip_signature"] is True
 
     def test_s3_uri_sets_fallback_region(self):
-        kwargs: dict = {}
+        kwargs: dict[str, Any] = {}
         _apply_s3_defaults(kwargs, "s3://bucket/key")
         assert kwargs["region"] == "us-west-2"
 
     def test_region_from_url_takes_precedence(self):
-        kwargs: dict = {}
+        kwargs: dict[str, Any] = {}
         _apply_s3_defaults(kwargs, "https://b.s3.eu-north-1.amazonaws.com/k")
         assert kwargs["region"] == "eu-north-1"
 
     def test_explicit_region_not_overwritten(self):
-        kwargs: dict = {"region": "ap-south-1"}
+        kwargs: dict[str, Any] = {"region": "ap-south-1"}
         _apply_s3_defaults(kwargs, "https://b.s3.eu-north-1.amazonaws.com/k")
         assert kwargs["region"] == "ap-south-1"
 
     def test_custom_credential_provider_skips_defaults(self):
         provider = MagicMock()
-        kwargs: dict = {"credential_provider": provider}
+        kwargs: dict[str, Any] = {"credential_provider": provider}
         _apply_s3_defaults(kwargs, "s3://bucket/key")
         assert "skip_signature" not in kwargs
         assert kwargs["credential_provider"] is provider
@@ -164,7 +165,7 @@ class TestApplyS3Defaults:
             create=True,
         ):
             with patch("rastera.store._apply_boto3_credentials") as mock_apply:
-                kwargs: dict = {"skip_signature": False}
+                kwargs: dict[str, Any] = {"skip_signature": False}
                 _apply_s3_defaults(kwargs, "s3://bucket/key")
                 mock_apply.assert_called_once()
                 assert "skip_signature" not in kwargs
