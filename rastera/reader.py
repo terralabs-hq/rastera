@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
-from typing import Any, overload
+from typing import Any, TypedDict, overload
 
 import numpy as np
 from affine import Affine
@@ -44,10 +44,19 @@ class AsyncGeoTIFF:
     resampling, and overview selection.
     """
 
-    def __init__(self, uri: str, geotiff: GeoTIFF):
+    def __init__(
+        self,
+        uri: str,
+        geotiff: GeoTIFF,
+        *,
+        meta_overrides: MetaOverrides | None = None,
+    ):
         self.uri = uri
         self._geotiff = geotiff
-        self._crs_epsg: int | None = geotiff.crs.to_epsg()
+        resolved = _resolve_meta_overrides(meta_overrides)
+        self._crs_epsg: int | None = (
+            resolved["crs"] if "crs" in resolved else geotiff.crs.to_epsg()
+        )
         self._nodata: int | float | None = _coerce_nodata(geotiff.nodata, geotiff.dtype)
 
         self.overviews: list[tuple[int, int]] = [
@@ -73,6 +82,7 @@ class AsyncGeoTIFF:
         store: Any = None,
         prefetch: int = 32768,
         cache: bool = True,
+        meta_overrides: MetaOverrides | None = None,
         **store_kwargs: Any,
     ) -> AsyncGeoTIFF:
         """Open a GeoTIFF from a URI.
@@ -89,13 +99,17 @@ class AsyncGeoTIFF:
             prefetch: Number of bytes to prefetch when opening the TIFF.
             cache: When True, cache the parsed GeoTIFF object in memory so that
                 subsequent opens of the same URI skip the header fetch.
+            meta_overrides: Optional header overrides applied at construction.
+                Currently supports ``{"crs": int | CRS}`` for TIFFs missing
+                or carrying incorrect georeferencing. Overrides always
+                replace the file's reported value.
             **store_kwargs: Extra keyword arguments forwarded to ``from_url``
                 (e.g. ``region``, ``skip_signature``, ``request_payer``).
         """
         if cache:
             gt = get_cached_geotiff(uri)
             if gt is not None:
-                return cls(uri, gt)
+                return cls(uri, gt, meta_overrides=meta_overrides)
 
         if store is not None:
             key = _extract_key(uri)
@@ -117,7 +131,7 @@ class AsyncGeoTIFF:
                 _geotiff_cache.popitem(last=False)
             _geotiff_cache[uri] = geotiff
 
-        return cls(uri, geotiff)
+        return cls(uri, geotiff, meta_overrides=meta_overrides)
 
     async def read(
         self,
@@ -421,6 +435,7 @@ async def _open_many(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
+    meta_overrides: MetaOverrides | None = None,
     **store_kwargs: Any,
 ) -> list[AsyncGeoTIFF]:
     """Open multiple GeoTIFFs concurrently with a shared store."""
@@ -440,7 +455,13 @@ async def _open_many(
     return list(
         await asyncio.gather(
             *(
-                AsyncGeoTIFF.open(u, store=store, prefetch=prefetch, cache=cache)
+                AsyncGeoTIFF.open(
+                    u,
+                    store=store,
+                    prefetch=prefetch,
+                    cache=cache,
+                    meta_overrides=meta_overrides,
+                )
                 for u in uris
             )
         )
@@ -454,6 +475,7 @@ async def open(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
+    meta_overrides: MetaOverrides | None = None,
     **store_kwargs: Any,
 ) -> AsyncGeoTIFF: ...
 
@@ -465,6 +487,7 @@ async def open(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
+    meta_overrides: MetaOverrides | None = None,
     **store_kwargs: Any,
 ) -> list[AsyncGeoTIFF]: ...
 
@@ -475,6 +498,7 @@ async def open(
     store: Any = None,
     prefetch: int = 32768,
     cache: bool = True,
+    meta_overrides: MetaOverrides | None = None,
     **store_kwargs: Any,
 ) -> AsyncGeoTIFF | list[AsyncGeoTIFF]:
     """Open one or more GeoTIFFs from any supported URI.
@@ -488,15 +512,28 @@ async def open(
         prefetch: Number of bytes to prefetch when opening the TIFF.
         cache: When True, cache parsed TIFF headers in memory so that
             subsequent opens of the same URI skip the header fetch.
+        meta_overrides: Optional header overrides (e.g. ``{"crs": 3006}``)
+            for TIFFs missing or carrying incorrect georeferencing. The
+            same override is applied to every URI when a list is passed.
         **store_kwargs: Extra kwargs forwarded to ``async_tiff.store.from_url``
             (e.g. ``skip_signature``, ``region``, ``request_payer``).
     """
     if isinstance(uri, str):
         return await AsyncGeoTIFF.open(
-            uri, store=store, prefetch=prefetch, cache=cache, **store_kwargs
+            uri,
+            store=store,
+            prefetch=prefetch,
+            cache=cache,
+            meta_overrides=meta_overrides,
+            **store_kwargs,
         )
     return await _open_many(
-        uri, store=store, prefetch=prefetch, cache=cache, **store_kwargs
+        uri,
+        store=store,
+        prefetch=prefetch,
+        cache=cache,
+        meta_overrides=meta_overrides,
+        **store_kwargs,
     )
 
 
@@ -584,3 +621,35 @@ def _coerce_nodata(
     if kind in ("i", "u"):
         return None if math.isnan(nodata) else int(nodata)
     return float(nodata)
+
+
+class MetaOverrides(TypedDict, total=False):
+    """Header metadata overrides for ``open()``.
+
+    Values replace what the GeoTIFF reports, even when already set.
+    Useful when a TIFF is missing georeferencing that you know
+    out-of-band (e.g. a sidecar-less file known to be EPSG:3006).
+    """
+
+    crs: int | CRS
+
+
+_META_OVERRIDE_KEYS: frozenset[str] = frozenset({"crs"})
+
+
+def _resolve_meta_overrides(
+    overrides: MetaOverrides | None,
+) -> dict[str, Any]:
+    """Validate *overrides* and normalize values to their stored form."""
+    if not overrides:
+        return {}
+    unknown = set(overrides) - _META_OVERRIDE_KEYS
+    if unknown:
+        raise ValueError(
+            f"Unknown meta_overrides key(s): {sorted(unknown)}. "
+            f"Allowed: {sorted(_META_OVERRIDE_KEYS)}."
+        )
+    resolved: dict[str, Any] = {}
+    if "crs" in overrides:
+        resolved["crs"] = _normalize_crs(overrides["crs"])
+    return resolved
