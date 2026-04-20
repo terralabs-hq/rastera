@@ -136,6 +136,62 @@ class TestOpen:
             )
 
 
+# ── meta_overrides ──────────────────────────────────────────────────────
+
+
+class TestMetaOverrides:
+    def test_crs_override_on_missing(self):
+        """When the TIFF reports no CRS, the override fills it in."""
+        gt = make_mock_geotiff()
+        gt.crs.to_epsg.return_value = None
+        obj = AsyncGeoTIFF("s3://b/k.tif", gt, meta_overrides={"crs": 3006})
+        assert obj._crs_epsg == 3006
+
+    def test_crs_override_replaces_existing(self):
+        """Override always wins, even when the TIFF already has a CRS."""
+        gt = make_mock_geotiff(crs_epsg=4326)
+        obj = AsyncGeoTIFF("s3://b/k.tif", gt, meta_overrides={"crs": 3006})
+        assert obj._crs_epsg == 3006
+
+    def test_no_override_preserves_file_crs(self):
+        gt = make_mock_geotiff(crs_epsg=32632)
+        obj = AsyncGeoTIFF("s3://b/k.tif", gt)
+        assert obj._crs_epsg == 32632
+
+    def test_crs_override_accepts_pyproj_crs(self):
+        from pyproj import CRS
+
+        gt = make_mock_geotiff()
+        gt.crs.to_epsg.return_value = None
+        obj = AsyncGeoTIFF(
+            "s3://b/k.tif", gt, meta_overrides={"crs": CRS.from_epsg(3006)}
+        )
+        assert obj._crs_epsg == 3006
+
+    def test_unknown_key_raises(self):
+        gt = make_mock_geotiff()
+        with pytest.raises(ValueError, match="Unknown meta_overrides key"):
+            AsyncGeoTIFF("s3://b/k.tif", gt, meta_overrides={"csr": 3006})  # type: ignore[typeddict-unknown-key]
+
+    @pytest.mark.asyncio
+    @patch("rastera.reader.GeoTIFF")
+    @patch("rastera.reader.from_url")
+    async def test_open_forwards_override(
+        self, mock_from_url: Any, mock_geotiff_cls: Any
+    ):
+        """meta_overrides passed to open() propagates to the AsyncGeoTIFF."""
+        gt = make_mock_geotiff()
+        gt.crs.to_epsg.return_value = None
+        mock_from_url.return_value = MagicMock()
+        mock_geotiff_cls.open = AsyncMock(return_value=gt)
+
+        obj = await rastera.open(
+            "s3://bucket/key.tif", meta_overrides={"crs": 3006}
+        )
+        assert isinstance(obj, AsyncGeoTIFF)
+        assert obj._crs_epsg == 3006
+
+
 # ── read() ───────────────────────────────────────────────────────────────
 
 

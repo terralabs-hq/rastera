@@ -14,7 +14,7 @@
 import rastera
 
 uri = "s3://my-bucket/my-cog.tif"
-src = await rastera.open(uri, prefetch=32768, cache=True)
+src = await rastera.open(uri, prefetch=32768, cache=True, meta_overrides=None)
 
 # Full image
 raster_array = await src.read()
