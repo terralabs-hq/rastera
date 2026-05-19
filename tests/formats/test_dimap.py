@@ -111,6 +111,25 @@ class TestParseDIMAP:
         assert layout.crs_epsg == 32633
         assert layout.dtype == np.dtype("uint16")
 
+    def test_untiled_dimap_uses_full_raster_as_one_tile(self):
+        """Some PNEO deliveries omit <Tile_Set> entirely — the whole raster
+        is a single tile per band-group (Data_File still carries
+        tile_R='1' tile_C='1'). The parser must accept that and produce a
+        1x1 grid sized to the full raster."""
+        untiled = _modified(
+            PNEO_DIMAP,
+            b"<Tile_Set>\n        <NTILES>4</NTILES>\n        <Regular_Tiling>\n"
+            b'          <NTILES_SIZE ncols="400" nrows="500" />\n'
+            b'          <NTILES_COUNT ntiles_C="2" ntiles_R="2" />\n'
+            b'          <NTILES_OVERLAP ncols="0" nrows="0" />\n'
+            b"        </Regular_Tiling>\n      </Tile_Set>",
+            b"",
+        )
+        layout = _parse_dimap_xml(untiled)
+        assert (layout.tile_rows, layout.tile_cols) == (1, 1)
+        assert (layout.tile_width, layout.tile_height) == (800, 1000)
+        assert layout.width == 800 and layout.height == 1000
+
     def test_parses_band_groups_and_virtual_band_order(self):
         """Virtual bands are concatenated across groups in document order;
         each remembers its group and its 1-based band index *within* a

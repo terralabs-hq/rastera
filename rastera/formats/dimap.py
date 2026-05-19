@@ -415,7 +415,15 @@ def _require_text(parent: ET.Element, tag: str) -> str:
 
 
 def _parse_regular_tiling(dims: ET.Element) -> tuple[int, int, int, int]:
-    tile_set = _require(dims, "Tile_Set")
+    tile_set = dims.find("Tile_Set")
+    if tile_set is None:
+        # Untiled DIMAP: the whole raster is one tile per band-group. The
+        # Data_File entries still carry tile_R="1" tile_C="1", so the
+        # mosaic stitcher works unchanged with a 1x1 grid sized to the
+        # full raster.
+        nrows = int(_require_text(dims, "NROWS"))
+        ncols = int(_require_text(dims, "NCOLS"))
+        return 1, 1, nrows, ncols
     regular = tile_set.find("Regular_Tiling")
     if regular is None:
         raise NotImplementedError(
