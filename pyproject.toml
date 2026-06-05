@@ -30,7 +30,7 @@ markers = [
 dev = [
     "ruff==0.8.5",
     "pyright>=1.1.408,<2.0.0",
-    "pytest>=8.0.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.0.0",
     "boto3>=1.42.93",
 ]
