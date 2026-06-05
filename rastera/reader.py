@@ -412,10 +412,10 @@ class AsyncGeoTIFF:
         snap_to_grid: bool = True,
     ) -> RasterArray:
         """Read at native resolution/CRS, optionally from an overview."""
-        # TODO: async_geotiff's Window has no stride/step support, so we
-        # always read at full tile resolution even when the output is much
-        # coarser. If async_geotiff adds stride support we could do
-        # decimated reads here to skip unnecessary pixels and reduce I/O.
+        # async_geotiff's Window has no stride/step support, so reads
+        # always pull every pixel in the requested window at the chosen
+        # overview level; any further downsampling happens post-fetch in
+        # `_read_reprojected` / `resample_nearest`.
 
         # Determine which readable to use (full-res GeoTIFF or an Overview)
         if overview is not None:
@@ -575,7 +575,12 @@ async def open(
 
 
 def get_cached_geotiff(uri: str) -> GeoTIFF | None:
-    """Return a cached GeoTIFF object for *uri*, or None on cache miss."""
+    """Return the cached parsed ``GeoTIFF`` for *uri*, or ``None`` on miss.
+
+    The cache is the module-level LRU populated by ``AsyncGeoTIFF.open``.
+    A hit moves *uri* to the most-recently-used position. Returns ``None``
+    when caching is disabled (``set_cache_size(0)``) or the URI is absent.
+    """
     if _cache_max_size > 0:
         gt = _geotiff_cache.get(uri)
         if gt is not None:
@@ -585,12 +590,23 @@ def get_cached_geotiff(uri: str) -> GeoTIFF | None:
 
 
 def clear_cache() -> None:
-    """Clear the in-memory GeoTIFF header cache."""
+    """Drop all entries from the in-memory GeoTIFF header cache.
+
+    Does not change the configured cache size; subsequent opens repopulate
+    it up to the current limit.
+    """
     _geotiff_cache.clear()
 
 
 def set_cache_size(n: int) -> None:
-    """Set max cached GeoTIFF objects (LRU eviction). 0 disables."""
+    """Set the maximum number of parsed GeoTIFF headers held in memory.
+
+    The cache is a process-wide LRU shared by all callers of
+    ``AsyncGeoTIFF.open``; the default capacity is 128. Passing ``n=0``
+    disables caching entirely and evicts everything currently held.
+    Shrinking below the current population evicts least-recently-used
+    entries until the new bound is satisfied.
+    """
     global _cache_max_size
     _cache_max_size = n
     while len(_geotiff_cache) > _cache_max_size:
@@ -663,6 +679,14 @@ class MetaOverrides(TypedDict, total=False):
     Values replace what the GeoTIFF reports, even when already set.
     Useful when a TIFF is missing georeferencing that you know
     out-of-band (e.g. a sidecar-less file known to be EPSG:3006).
+
+    Fields:
+        crs: EPSG code (``int``) or ``pyproj.CRS`` declaring the
+            dataset's coordinate reference system. Always *replaces*
+            the file's reported CRS — there is no fallback semantics.
+            Only relabels the data; it does not reproject. The override
+            is what subsequent ``read()`` calls see as ``bbox_crs`` /
+            ``target_crs`` source.
     """
 
     crs: int | CRS
